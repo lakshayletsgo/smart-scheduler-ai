@@ -303,7 +303,7 @@ def authorize():
             access_type='offline',
             include_granted_scopes='true',
             state=state,
-            prompt='consent'  # Force consent screen to ensure getting refresh token
+            prompt='consent'  
         )
         
         return redirect(authorization_url)
