@@ -4,34 +4,195 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Smart Scheduler AI</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .chat-container {
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 1rem;
+        }
+        .chat-box {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border-radius: 4px;
+        }
+        .message {
+            margin-bottom: 1rem;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+        }
+        .user-message {
+            background-color: #e3f2fd;
+            margin-left: 2rem;
+        }
+        .bot-message {
+            background-color: #f5f5f5;
+            margin-right: 2rem;
+        }
+        .time-slots {
+            margin-top: 1rem;
+        }
+        .time-slot-btn {
+            margin: 0.25rem;
+        }
+        .progress-container {
+            margin-bottom: 1rem;
+        }
+        .progress-item {
+            margin-bottom: 0.5rem;
+        }
+        .nav-options {
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+    </style>
 </head>
 <body>
-    <h1>AI scheduling assistant</h1>
-    
     <div class="chat-container">
-        <div class="chat-messages" id="chat-messages">
-            <div class="message assistant">
-                <div class="message-content">
-                    Hello! I'm your AI scheduling assistant. I can help you schedule meetings by understanding your requirements. What kind of meeting would you like to schedule?
+        <h1 class="text-center mb-4">Smart Scheduler AI</h1>
+        
+        <div class="nav-options">
+            <a href="/call" class="btn btn-primary">Schedule via Voice Call</a>
+            <button class="btn btn-outline-primary" onclick="startTextChat()">Schedule via Text Chat</button>
+        </div>
+
+        <div id="chatInterface" style="display: none;">
+            <div class="progress-container">
+                <div class="progress-item">
+                    <small>Scheduling Progress:</small>
+                    <div class="progress">
+                        <div id="progressBar" class="progress-bar" role="progressbar" style="width: 0%"></div>
+                    </div>
                 </div>
             </div>
-        </div>
-        
-        <div class="chat-input">
-            <form id="chat-form">
-                <input type="text" id="user-input" placeholder="Type your message here..." autocomplete="off">
-                <button type="submit">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="22" y1="2" x2="11" y2="13"></line>
-                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                    </svg>
-                </button>
-            </form>
+            
+            <div id="chatBox" class="chat-box"></div>
+            
+            <div class="input-group">
+                <input type="text" id="userInput" class="form-control" placeholder="Type your message...">
+                <button class="btn btn-primary" onclick="sendMessage()">Send</button>
+            </div>
         </div>
     </div>
 
-    <script src="{{ url_for('static', filename='js/voice_handler.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+    <script>
+        let timeSlots = [];
+        
+        function startTextChat() {
+            document.getElementById('chatInterface').style.display = 'block';
+            addBotMessage("Hello! I'm your AI scheduling assistant. How can I help you schedule your appointment today?");
+        }
+        
+        function updateProgress(state) {
+            let progress = 0;
+            if (state.has_purpose) progress += 25;
+            if (state.has_duration) progress += 25;
+            if (state.has_time) progress += 25;
+            if (state.slots_shown) progress += 25;
+            
+            document.getElementById('progressBar').style.width = progress + '%';
+        }
+        
+        function addMessage(message, isUser) {
+            const chatBox = document.getElementById('chatBox');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
+            messageDiv.textContent = message;
+            chatBox.appendChild(messageDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+        
+        function addBotMessage(message) {
+            addMessage(message, false);
+        }
+        
+        function addUserMessage(message) {
+            addMessage(message, true);
+        }
+        
+        function displayTimeSlots(slots) {
+            timeSlots = slots;
+            const chatBox = document.getElementById('chatBox');
+            const slotsDiv = document.createElement('div');
+            slotsDiv.className = 'time-slots';
+            
+            slots.forEach((slot, index) => {
+                const button = document.createElement('button');
+                button.className = 'btn btn-outline-primary time-slot-btn';
+                button.textContent = slot;
+                button.onclick = () => selectTimeSlot(index);
+                slotsDiv.appendChild(button);
+            });
+            
+            chatBox.appendChild(slotsDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+        
+        async function selectTimeSlot(index) {
+            try {
+                const response = await fetch('/schedule', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ slot_index: index })
+                });
+                
+                const data = await response.json();
+                addBotMessage(data.message);
+                
+                if (data.success) {
+                    // Clear time slots after successful scheduling
+                    const timeSlotsElements = document.getElementsByClassName('time-slots');
+                    Array.from(timeSlotsElements).forEach(element => element.remove());
+                }
+            } catch (error) {
+                console.error('Error scheduling appointment:', error);
+                addBotMessage('Sorry, there was an error scheduling your appointment. Please try again.');
+            }
+        }
+        
+        async function sendMessage() {
+            const userInput = document.getElementById('userInput');
+            const message = userInput.value.trim();
+            
+            if (message) {
+                addUserMessage(message);
+                userInput.value = '';
+                
+                try {
+                    const response = await fetch('/chat', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ message: message })
+                    });
+                    
+                    const data = await response.json();
+                    addBotMessage(data.response);
+                    
+                    if (data.has_calendar_data && data.time_slots) {
+                        displayTimeSlots(data.time_slots);
+                    }
+                    
+                    updateProgress(data.state);
+                } catch (error) {
+                    console.error('Error sending message:', error);
+                    addBotMessage('Sorry, there was an error processing your message. Please try again.');
+                }
+            }
+        }
+        
+        // Handle Enter key in input field
+        document.getElementById('userInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+    </script>
 </body>
 </html> 

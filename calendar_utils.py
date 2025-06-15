@@ -1,11 +1,138 @@
-from datetime import datetime, timedelta
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from dateutil.parser import parse
+from datetime import datetime, timedelta
 import pytz
 import logging
+import os
+import pickle
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+CREDENTIALS_FILE = 'credentials.json'
+TOKEN_FILE = 'token.pickle'
+
+class CalendarManager:
+    def __init__(self):
+        self.creds = None
+        self.service = None
+        self._load_credentials()
+        
+    def _load_credentials(self):
+        """Load or refresh Google Calendar credentials"""
+        if os.path.exists(TOKEN_FILE):
+            with open(TOKEN_FILE, 'rb') as token:
+                self.creds = pickle.load(token)
+                
+        if not self.creds or not self.creds.valid:
+            if self.creds and self.creds.expired and self.creds.refresh_token:
+                self.creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+                self.creds = flow.run_local_server(port=5000)
+                
+            with open(TOKEN_FILE, 'wb') as token:
+                pickle.dump(self.creds, token)
+                
+        self.service = build('calendar', 'v3', credentials=self.creds)
+        
+    async def schedule_appointment(self, name: str, date: str, time: str, reason: str) -> bool:
+        """Schedule an appointment in Google Calendar"""
+        try:
+            # Combine date and time into a datetime object
+            dt_str = f"{date} {time}"
+            start_time = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
+            end_time = start_time + timedelta(hours=1)  # Default 1-hour appointments
+            
+            timezone = pytz.timezone('UTC')  # You can change this to your local timezone
+            
+            event = {
+                'summary': f"Appointment with {name}",
+                'description': reason,
+                'start': {
+                    'dateTime': start_time.isoformat(),
+                    'timeZone': str(timezone),
+                },
+                'end': {
+                    'dateTime': end_time.isoformat(),
+                    'timeZone': str(timezone),
+                },
+                'attendees': [
+                    {'email': name if '@' in name else ''}  # Add email if provided
+                ],
+                'reminders': {
+                    'useDefault': True
+                }
+            }
+            
+            # Check if the time slot is available
+            busy_slots = self.service.freebusy().query(
+                body={
+                    'timeMin': start_time.isoformat(),
+                    'timeMax': end_time.isoformat(),
+                    'items': [{'id': 'primary'}]
+                }
+            ).execute()
+            
+            # If the time slot is busy, return False
+            if busy_slots['calendars']['primary']['busy']:
+                return False
+                
+            # Create the event
+            event = self.service.events().insert(
+                calendarId='primary',
+                body=event
+            ).execute()
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error scheduling appointment: {str(e)}")
+            return False
+            
+    def get_available_slots(self, date: str) -> list:
+        """Get available time slots for a given date"""
+        try:
+            # Convert date string to datetime
+            target_date = datetime.strptime(date, "%Y-%m-%d")
+            start_of_day = target_date.replace(hour=9)  # Start at 9 AM
+            end_of_day = target_date.replace(hour=17)  # End at 5 PM
+            
+            # Get busy periods
+            busy_slots = self.service.freebusy().query(
+                body={
+                    'timeMin': start_of_day.isoformat() + 'Z',
+                    'timeMax': end_of_day.isoformat() + 'Z',
+                    'items': [{'id': 'primary'}]
+                }
+            ).execute()
+            
+            # Create list of all possible hour slots
+            all_slots = []
+            current = start_of_day
+            while current < end_of_day:
+                all_slots.append(current.strftime("%H:%M"))
+                current += timedelta(hours=1)
+                
+            # Remove busy slots
+            busy_periods = busy_slots['calendars']['primary']['busy']
+            available_slots = all_slots.copy()
+            
+            for period in busy_periods:
+                busy_start = datetime.fromisoformat(period['start'].replace('Z', '+00:00'))
+                busy_start_str = busy_start.strftime("%H:%M")
+                if busy_start_str in available_slots:
+                    available_slots.remove(busy_start_str)
+                    
+            return available_slots
+            
+        except Exception as e:
+            print(f"Error getting available slots: {str(e)}")
+            return []
 
 def build_calendar_service(credentials):
     try:

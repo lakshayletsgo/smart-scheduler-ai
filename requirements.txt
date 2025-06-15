@@ -4,9 +4,16 @@ google-auth==2.27.0
 google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
 google-api-python-client==2.116.0
+google-api-core==2.15.0
 python-dateutil==2.8.2
 python-dotenv==1.0.1
 SpeechRecognition==3.10.1
 gTTS==2.5.1
 dateparser==1.2.0
-pytz==2024.1 
+pytz==2024.1
+livekit>=1.0.9
+livekit-api>=1.0.2
+websockets>=11.0.3
+aiohttp>=3.8.5
+asyncio>=3.4.3
+nest_asyncio>=1.5.8 
