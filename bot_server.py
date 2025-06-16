@@ -16,7 +16,7 @@ app.add_middleware(
 )
 
 # Store active bots
-active_bots: Dict[str, 'AppointmentBot'] = {}
+active_bots: Dict[str, 'VoiceBot'] = {}
 
 @app.post("/bot/{room_id}/transcribe")
 async def transcribe_audio(room_id: str, audio_data: bytes):

@@ -1,249 +1,403 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voice Call - Appointment Scheduler</title>
-    <script src="https://unpkg.com/livekit-client@1.15.5/dist/livekit-client.umd.js"></script>
+    <title>Voice Meeting Scheduler</title>
     <style>
         body {
             font-family: Arial, sans-serif;
-            margin: 0;
+            max-width: 800px;
+            margin: 0 auto;
             padding: 20px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            min-height: 100vh;
             background-color: #f5f5f5;
         }
-        
         .container {
-            max-width: 800px;
-            width: 100%;
-            background: white;
+            background-color: white;
             padding: 20px;
-            border-radius: 10px;
+            border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        
         .controls {
             display: flex;
             gap: 10px;
             margin: 20px 0;
             justify-content: center;
         }
-        
         button {
             padding: 10px 20px;
             border: none;
-            border-radius: 5px;
+            border-radius: 4px;
             cursor: pointer;
             font-size: 16px;
             transition: background-color 0.3s;
         }
-        
-        #startCall {
+        #startListening {
             background-color: #4CAF50;
             color: white;
         }
-        
-        #endCall {
+        #startListening.listening {
             background-color: #f44336;
-            color: white;
         }
-        
-        button:hover {
-            opacity: 0.9;
-        }
-        
-        button:disabled {
-            background-color: #cccccc;
-            cursor: not-allowed;
-        }
-        
-        #transcript {
+        .transcript {
             margin-top: 20px;
-            padding: 10px;
+            padding: 15px;
             border: 1px solid #ddd;
-            border-radius: 5px;
-            min-height: 200px;
-            max-height: 400px;
-            overflow-y: auto;
+            border-radius: 4px;
+            min-height: 100px;
+            white-space: pre-wrap;
         }
-        
-        .message {
+        .meeting-details {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+        .meeting-details h3 {
+            margin-top: 0;
+        }
+        .detail-item {
             margin: 10px 0;
-            padding: 10px;
-            border-radius: 5px;
         }
-        
-        .user {
-            background-color: #e3f2fd;
-            margin-left: 20px;
-        }
-        
-        .bot {
-            background-color: #f5f5f5;
-            margin-right: 20px;
-        }
-        
-        #status {
-            margin: 10px 0;
+        .detail-label {
             font-weight: bold;
+            color: #666;
+        }
+        #status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
             text-align: center;
+            font-weight: bold;
+        }
+        .success {
+            background-color: #dff0d8;
+            color: #3c763d;
+        }
+        .error {
+            background-color: #f2dede;
+            color: #a94442;
+        }
+        .info {
+            background-color: #d9edf7;
+            color: #31708f;
+        }
+        .listening-indicator {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .listening-indicator.active {
+            display: flex;
+        }
+        .pulse {
+            width: 10px;
+            height: 10px;
+            background-color: #f44336;
+            border-radius: 50%;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.5); opacity: 0.5; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .voice-controls {
+            display: flex;
+            gap: 10px;
+            margin: 10px 0;
+            justify-content: center;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Voice Appointment Scheduler</h1>
-        <div id="status">Ready to start call</div>
+        <h1>Voice Meeting Scheduler</h1>
+        <p>Click the button and speak to schedule a meeting. Include the purpose, date, time, and attendees in your request.</p>
         
         <div class="controls">
-            <button id="startCall">Start Call</button>
-            <button id="endCall" disabled>End Call</button>
+            <button id="startListening">Start Speaking</button>
         </div>
-        
-        <div id="transcript"></div>
+
+        <div class="voice-controls">
+            <label>
+                <input type="checkbox" id="enableVoiceFeedback" checked>
+                Enable Voice Feedback
+            </label>
+        </div>
+
+        <div class="listening-indicator">
+            <div class="pulse"></div>
+            <span>Listening...</span>
+        </div>
+
+        <div class="transcript">
+            <strong>Your speech:</strong>
+            <div id="speechTranscript"></div>
+        </div>
+
+        <div class="meeting-details">
+            <h3>Meeting Details</h3>
+            <div class="detail-item">
+                <span class="detail-label">Purpose:</span>
+                <span id="purpose">Not specified</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Date:</span>
+                <span id="date">Not specified</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Time:</span>
+                <span id="time">Not specified</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">Attendees:</span>
+                <span id="attendees">Not specified</span>
+            </div>
+        </div>
+
+        <div id="status"></div>
     </div>
-    
+
     <script>
-        let room;
-        let audioTrack;
-        let roomName;  // Store the room name
-        const startCallBtn = document.getElementById('startCall');
-        const endCallBtn = document.getElementById('endCall');
+        const startListeningBtn = document.getElementById('startListening');
+        const speechTranscript = document.getElementById('speechTranscript');
+        const listeningIndicator = document.querySelector('.listening-indicator');
+        const purposeSpan = document.getElementById('purpose');
+        const dateSpan = document.getElementById('date');
+        const timeSpan = document.getElementById('time');
+        const attendeesSpan = document.getElementById('attendees');
         const statusDiv = document.getElementById('status');
-        const transcriptDiv = document.getElementById('transcript');
-        
-        function updateStatus(message) {
-            statusDiv.textContent = message;
-        }
-        
-        function addMessage(text, isUser = false) {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = `message ${isUser ? 'user' : 'bot'}`;
-            messageDiv.textContent = text;
-            transcriptDiv.appendChild(messageDiv);
-            transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
-        }
-        
-        async function startCall() {
-            try {
-                updateStatus('Creating room...');
-                startCallBtn.disabled = true;
-                
-                // Create room
-                const response = await fetch('/api/create-room', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
-                });
-                
-                if (!response.ok) {
-                    console.log("Error is in the response and the response is", response);
-                    throw new Error('Failed to create new room')};
-                
-                const { url, token, room: room_name } = await response.json();
-                roomName = room_name;  // Store the room name
-                
-                // Connect to room
-                updateStatus('Connecting to room...');
-                room = new LivekitClient.Room({
-                    adaptiveStream: true,
-                    dynacast: true
-                });
-                
-                // Handle data messages from the bot
-                room.on(LivekitClient.RoomEvent.DataReceived, (payload) => {
-                    try {
-                        const data = JSON.parse(new TextDecoder().decode(payload));
-                        if (data.type === 'speech') {
-                            addMessage(data.text);
-                        }
-                    } catch (e) {
-                        console.error('Error parsing data message:', e);
-                    }
-                });
-                
-                await room.connect(url, token);
-                
-                // Get audio permission and publish track
-                updateStatus('Getting microphone access...');
-                audioTrack = await LivekitClient.createLocalAudioTrack();
-                await room.localParticipant.publishTrack(audioTrack);
-                
-                // Set up audio processing
-                audioTrack.on('data', async (data) => {
-                    try {
-                        // Send audio data to bot server
-                        const response = await fetch(`http://127.0.0.1:8000/bot/${roomName}/transcribe`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/octet-stream' },
-                            body: data
-                        });
-                        
-                        if (response.ok) {
-                            const result = await response.json();
-                            if (result.text) {
-                                // Send transcribed text to bot
-                                const messageResponse = await fetch(`http://127.0.0.1:8000/bot/${roomName}/message`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ message: result.text })
-                                });
-                                
-                                if (messageResponse.ok) {
-                                    const messageResult = await messageResponse.json();
-                                    addMessage(messageResult.response);
-                                }
-                            }
-                        }
-                    } catch (error) {
-                        console.error('Error processing audio:', error);
-                    }
-                });
-                
-                updateStatus('Connected - Speaking with appointment bot');
-                endCallBtn.disabled = false;
-                
-            } catch (error) {
-                console.error('Error starting call:', error);
-                updateStatus('Error starting call: ' + error.message);
-                startCallBtn.disabled = false;
+        const enableVoiceFeedbackCheckbox = document.getElementById('enableVoiceFeedback');
+
+        let recognition;
+        let isListening = false;
+        let speechSynthesis = window.speechSynthesis;
+        let speaking = false;
+
+        function speak(text) {
+            if (enableVoiceFeedbackCheckbox.checked && !speaking) {
+                speaking = true;
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.onend = () => {
+                    speaking = false;
+                };
+                speechSynthesis.speak(utterance);
             }
         }
-        
-        async function endCall() {
-            try {
-                updateStatus('Ending call...');
-                endCallBtn.disabled = true;
-                
-                if (audioTrack) {
-                    audioTrack.stop();
+
+        function initializeSpeechRecognition() {
+            if ('webkitSpeechRecognition' in window) {
+                recognition = new webkitSpeechRecognition();
+            } else if ('SpeechRecognition' in window) {
+                recognition = new SpeechRecognition();
+            } else {
+                showStatus('Speech recognition is not supported in your browser.', 'error');
+                startListeningBtn.disabled = true;
+                return;
+            }
+
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+
+            recognition.onstart = () => {
+                isListening = true;
+                startListeningBtn.textContent = 'Stop Speaking';
+                startListeningBtn.classList.add('listening');
+                listeningIndicator.classList.add('active');
+                speak("I'm listening. Please tell me about the meeting you want to schedule.");
+            };
+
+            recognition.onend = () => {
+                isListening = false;
+                startListeningBtn.textContent = 'Start Speaking';
+                startListeningBtn.classList.remove('listening');
+                listeningIndicator.classList.remove('active');
+            };
+
+            recognition.onresult = (event) => {
+                let finalTranscript = '';
+                let interimTranscript = '';
+
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const transcript = event.results[i][0].transcript;
+                    if (event.results[i].isFinal) {
+                        finalTranscript += transcript;
+                        processSpeech(finalTranscript);
+                    } else {
+                        interimTranscript += transcript;
+                    }
                 }
+
+                speechTranscript.innerHTML = finalTranscript + '<i style="color: #666;">' + interimTranscript + '</i>';
+            };
+
+            recognition.onerror = (event) => {
+                showStatus('Error occurred in recognition: ' + event.error, 'error');
+                speak('Sorry, there was an error with speech recognition. Please try again.');
+            };
+        }
+
+        function updateMeetingDetails(details) {
+            console.log('Updating meeting details:', details);
+            let changes = [];
+
+            if (details.purpose && details.purpose !== purposeSpan.textContent) {
+                purposeSpan.textContent = details.purpose;
+                changes.push(`purpose: ${details.purpose}`);
+            }
+            if (details.date && details.date !== dateSpan.textContent) {
+                dateSpan.textContent = details.date;
+                changes.push(`date: ${details.date}`);
+            }
+            if (details.time && details.time !== timeSpan.textContent) {
+                timeSpan.textContent = details.time;
+                changes.push(`time: ${details.time}`);
+            }
+            if (details.attendees && details.attendees.join(', ') !== attendeesSpan.textContent) {
+                attendeesSpan.textContent = details.attendees.join(', ');
+                changes.push(`attendees: ${details.attendees.join(', ')}`);
+            }
+
+            if (changes.length > 0) {
+                speak(`I've updated ${changes.join(', ')}`);
+            }
+
+            // If all details are complete, automatically schedule the meeting
+            if (details.complete) {
+                speak("All meeting details are complete. I'll schedule it now.");
+                scheduleMeeting(details);
+            } else {
+                let missing = [];
+                if (!details.purpose) missing.push('purpose');
+                if (!details.date) missing.push('date');
+                if (!details.time) missing.push('time');
+                if (!details.attendees.length) missing.push('attendees');
                 
-                if (room) {
-                    // Notify server to cleanup
-                    await fetch('/api/end-call', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ room: room.name })
-                    });
+                if (missing.length > 0) {
+                    speak(`I still need the following information: ${missing.join(', ')}`);
+                }
+            }
+        }
+
+        function scheduleMeeting(details) {
+            console.log('Attempting to schedule meeting with details:', details);
+            showStatus('Scheduling meeting...', 'info');
+            speak('Scheduling your meeting...');
+            
+            fetch('/schedule', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    purpose: details.purpose,
+                    date: details.date,
+                    time: details.time,
+                    attendees: details.attendees
+                })
+            })
+            .then(response => {
+                console.log('Received response:', response);
+                return response.json();
+            })
+            .then(data => {
+                console.log('Processed response data:', data);
+                if (data.success) {
+                    const successMessage = `Meeting scheduled successfully! ${data.calendar_link ? 'The calendar invitation has been sent.' : ''}`;
+                    showStatus(successMessage, 'success');
+                    speak(successMessage);
                     
-                    await room.disconnect();
+                    // Reset the form after successful scheduling
+                    purposeSpan.textContent = 'Not specified';
+                    dateSpan.textContent = 'Not specified';
+                    timeSpan.textContent = 'Not specified';
+                    attendeesSpan.textContent = 'Not specified';
+                    speechTranscript.innerHTML = '';
+                    if (recognition) {
+                        recognition.stop();
+                    }
+                } else {
+                    const errorMessage = 'Failed to schedule meeting: ' + (data.error || 'Unknown error');
+                    showStatus(errorMessage, 'error');
+                    speak(errorMessage);
+                    console.error('Failed to schedule meeting:', data.error);
                 }
-                
-                updateStatus('Call ended');
-                startCallBtn.disabled = false;
-                
-            } catch (error) {
-                console.error('Error ending call:', error);
-                updateStatus('Error ending call: ' + error.message);
+            })
+            .catch(error => {
+                const errorMessage = 'Error scheduling meeting: ' + error;
+                console.error(errorMessage);
+                showStatus(errorMessage, 'error');
+                speak('Sorry, there was an error scheduling the meeting. Please try again.');
+            });
+        }
+
+        function showStatus(message, type) {
+            console.log(`Status update (${type}):`, message);
+            statusDiv.textContent = message;
+            statusDiv.className = type;
+            // Auto-hide success messages after 5 seconds
+            if (type === 'success') {
+                setTimeout(() => {
+                    statusDiv.textContent = '';
+                    statusDiv.className = '';
+                }, 5000);
             }
         }
-        
-        startCallBtn.addEventListener('click', startCall);
-        endCallBtn.addEventListener('click', endCall);
+
+        function processSpeech(transcript) {
+            console.log('Processing speech transcript:', transcript);
+            // Send the transcript to the server for processing
+            fetch('/process_speech', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ transcript: transcript })
+            })
+            .then(response => {
+                console.log('Received response from process_speech:', response);
+                return response.json();
+            })
+            .then(data => {
+                console.log('Processed speech data:', data);
+                if (data.success) {
+                    updateMeetingDetails(data.details);
+                } else {
+                    showStatus(data.error, 'error');
+                    speak('Sorry, I had trouble understanding that. Could you please try again?');
+                    console.error('Error processing speech:', data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error processing speech:', error);
+                showStatus('Error processing speech: ' + error, 'error');
+                speak('Sorry, there was an error processing your speech. Please try again.');
+            });
+        }
+
+        startListeningBtn.addEventListener('click', () => {
+            if (!recognition) {
+                initializeSpeechRecognition();
+            }
+
+            if (isListening) {
+                recognition.stop();
+            } else {
+                recognition.start();
+            }
+        });
+
+        // Initialize speech recognition when the page loads
+        initializeSpeechRecognition();
+
+        // Handle checkbox changes
+        enableVoiceFeedbackCheckbox.addEventListener('change', () => {
+            if (enableVoiceFeedbackCheckbox.checked) {
+                speak('Voice feedback enabled');
+            }
+        });
     </script>
 </body>
 </html> 

@@ -6,32 +6,33 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 import pickle
-from datetime import datetime
+from datetime import datetime, timedelta
+from google.oauth2 import credentials
+from googleapiclient.discovery import build
 import calendar_utils
 import prompts
 from functools import wraps
 from urllib.parse import urlencode
 import secrets
 import asyncio
-from livekit import api, rtc
-from voice_bot import AppointmentBot
-import aiohttp
+from voice_bot import VoiceBot
 import json
 from pathlib import Path
-import platform
-import socket
-from contextlib import asynccontextmanager
-import subprocess
-import threading
-from bot_server import active_bots, run_server
+from dotenv import load_dotenv
+import re
+from dateutil import parser
+import spacy
+from spacy.matcher import Matcher
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
-
-# Initialize LiveKit configuration
-LIVEKIT_API_KEY = os.getenv('LIVEKIT_API_KEY')
-LIVEKIT_API_SECRET = os.getenv('LIVEKIT_API_SECRET')
-LIVEKIT_URL = os.getenv('LIVEKIT_URL')
 
 # Google OAuth2 Configuration
 CLIENT_SECRETS_FILE = os.path.join(os.path.dirname(__file__), 'client_secrets.json')
@@ -39,9 +40,16 @@ SCOPES = ['https://www.googleapis.com/auth/calendar.readonly',
           'https://www.googleapis.com/auth/calendar.events']
 OAUTH_REDIRECT_URI = 'http://127.0.0.1:5000/oauth2callback'
 
-# Store active bots and API client
-livekit_api = None
-aiohttp_session = None
+# Store active bot instance
+bot = None
+
+# Load spaCy model for NLP
+try:
+    nlp = spacy.load('en_core_web_sm')
+except OSError:
+    import subprocess
+    subprocess.run(['python', '-m', 'spacy', 'download', 'en_core_web_sm'])
+    nlp = spacy.load('en_core_web_sm')
 
 def credentials_to_dict(credentials):
     return {
@@ -52,20 +60,6 @@ def credentials_to_dict(credentials):
         'client_secret': credentials.client_secret,
         'scopes': credentials.scopes
     }
-
-async def get_livekit_api():
-    """Get or create LiveKit API client"""
-    global livekit_api, aiohttp_session
-    if livekit_api is None:
-        if aiohttp_session is None:
-            aiohttp_session = aiohttp.ClientSession()
-        livekit_api = api.LiveKitAPI(
-            url=LIVEKIT_URL,
-            api_key=LIVEKIT_API_KEY,
-            api_secret=LIVEKIT_API_SECRET,
-            session=aiohttp_session
-        )
-    return livekit_api
 
 def run_async(coro):
     """Helper to run async code in Flask routes"""
@@ -79,22 +73,27 @@ def run_async(coro):
 aiplatform.init(project=os.getenv('GOOGLE_CLOUD_PROJECT'))
 
 def get_calendar_credentials():
+    """Get valid credentials for Google Calendar API."""
     creds = None
     if 'credentials' in session:
-        creds = Credentials(**session['credentials'])
+        try:
+            creds = Credentials(**session['credentials'])
+            logger.debug("Retrieved credentials from session")
+        except Exception as e:
+            logger.error(f"Error creating credentials from session: {e}")
+            return None
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            session['credentials'] = {
-                'token': creds.token,
-                'refresh_token': creds.refresh_token,
-                'token_uri': creds.token_uri,
-                'client_id': creds.client_id,
-                'client_secret': creds.client_secret,
-                'scopes': creds.scopes
-            }
+            try:
+                creds.refresh(Request())
+                session['credentials'] = credentials_to_dict(creds)
+                logger.debug("Refreshed expired credentials")
+            except Exception as e:
+                logger.error(f"Error refreshing credentials: {e}")
+                return None
         else:
+            logger.warning("No valid credentials found")
             return None
 
     return creds
@@ -117,342 +116,390 @@ class ConversationState:
 
 conversation_states = {}
 
+class MeetingDetails:
+    def __init__(self):
+        self.purpose = None
+        self.date = None
+        self.time = None
+        self.attendees = []
+        self.complete = False
+
+    def to_dict(self):
+        return {
+            'purpose': self.purpose,
+            'date': self.date,
+            'time': self.time,
+            'attendees': self.attendees,
+            'complete': self.complete
+        }
+
+def extract_meeting_details(text):
+    doc = nlp(text)
+    details = MeetingDetails()
+    logger.debug(f"Extracting details from text: {text}")
+
+    # Extract date and time using spaCy's entity recognition
+    for ent in doc.ents:
+        if ent.label_ == 'DATE':
+            try:
+                parsed_date = parser.parse(ent.text)
+                details.date = parsed_date.strftime('%Y-%m-%d')
+                logger.debug(f"Extracted date: {details.date}")
+            except:
+                pass
+        elif ent.label_ == 'TIME':
+            try:
+                parsed_time = parser.parse(ent.text)
+                details.time = parsed_time.strftime('%H:%M')
+                logger.debug(f"Extracted time: {details.time}")
+            except:
+                pass
+
+    # Extract email addresses for attendees
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    details.attendees = re.findall(email_pattern, text)
+    logger.debug(f"Extracted attendees: {details.attendees}")
+
+    # Extract purpose using improved patterns
+    purpose_patterns = [
+        [{'LOWER': 'schedule'}, {'OP': '*'}, {'POS': 'NOUN'}, {'LOWER': 'meeting'}],
+        [{'LOWER': 'schedule'}, {'OP': '*'}, {'POS': 'NOUN'}],
+        [{'LOWER': 'about'}, {'OP': '+'}, {'POS': 'NOUN'}],
+        [{'LOWER': 'discuss'}, {'OP': '+'}, {'POS': 'NOUN'}],
+        [{'LOWER': 'regarding'}, {'OP': '+'}, {'POS': 'NOUN'}],
+        [{'LOWER': 'for'}, {'OP': '+'}, {'POS': 'NOUN'}],
+        [{'POS': 'NOUN'}, {'LOWER': 'meeting'}],
+        [{'POS': 'ADJ'}, {'LOWER': 'meeting'}]
+    ]
+
+    matcher = Matcher(nlp.vocab)
+    for i, pattern in enumerate(purpose_patterns):
+        matcher.add(f"PURPOSE_{i}", [pattern])
+
+    matches = matcher(doc)
+    
+    # Get the longest matching span for purpose
+    if matches:
+        longest_match = max(matches, key=lambda x: x[2] - x[1])
+        match_id, start, end = longest_match
+        purpose_span = doc[start:end]
+        
+        # Get the sentence containing the purpose
+        for sent in doc.sents:
+            if purpose_span.start >= sent.start and purpose_span.end <= sent.end:
+                # Extract the entire relevant part of the sentence
+                relevant_text = []
+                for token in sent:
+                    if token.dep_ in ['nsubj', 'dobj', 'pobj', 'compound', 'amod'] or token.pos_ in ['NOUN', 'ADJ']:
+                        relevant_text.append(token.text)
+                
+                if relevant_text:
+                    details.purpose = ' '.join(relevant_text).strip()
+                    break
+        
+        if not details.purpose:
+            details.purpose = purpose_span.text
+
+    # If no purpose was found using patterns, use a simple heuristic
+    if not details.purpose:
+        for sent in doc.sents:
+            # Skip sentences that are mainly about date/time
+            has_datetime = any(ent.label_ in ['DATE', 'TIME'] for ent in sent.ents)
+            if not has_datetime and len(sent.text.split()) > 3:
+                # Extract meaningful parts of the sentence
+                meaningful_parts = []
+                for token in sent:
+                    if token.pos_ in ['NOUN', 'VERB', 'ADJ'] and not token.is_stop:
+                        meaningful_parts.append(token.text)
+                if meaningful_parts:
+                    details.purpose = ' '.join(meaningful_parts)
+                    break
+
+    logger.debug(f"Extracted purpose: {details.purpose}")
+
+    # Clean up the purpose
+    if details.purpose:
+        # Remove common prefixes like "schedule" or "about"
+        prefixes_to_remove = ['schedule', 'about', 'for', 'regarding']
+        purpose_words = details.purpose.lower().split()
+        while purpose_words and purpose_words[0] in prefixes_to_remove:
+            purpose_words.pop(0)
+        details.purpose = ' '.join(purpose_words).capitalize()
+
+    # Check if we have all necessary details
+    details.complete = bool(details.purpose and details.date and details.time and details.attendees)
+    logger.debug(f"Details complete: {details.complete}")
+    logger.debug(f"Final extracted details: {details.to_dict()}")
+
+    return details
+
 @app.route('/')
 def home():
+    """Home page route"""
     if 'session_id' not in session:
         session['session_id'] = secrets.token_hex(16)
         conversation_states[session['session_id']] = ConversationState()
     
     if 'credentials' not in session:
+        logger.debug("No credentials in session, redirecting to authorize")
         return redirect(url_for('authorize'))
     return render_template('index.html')
 
 @app.route('/call')
 def call_page():
-    """Render the call interface page"""
+    """Render the voice interface page"""
+    if 'credentials' not in session:
+        logger.debug("No credentials in session, redirecting to authorize")
+        return redirect(url_for('authorize'))
     return render_template('call.html')
-
-def cleanup_socket(sock):
-    try:
-        sock.shutdown(socket.SHUT_RDWR)
-    except (OSError, AttributeError):
-        pass
-    try:
-        sock.close()
-    except (OSError, AttributeError):
-        pass
-
-@asynccontextmanager
-async def get_session():
-    global aiohttp_session
-    if aiohttp_session is None or aiohttp_session.closed:
-        connector = aiohttp.TCPConnector(force_close=True)
-        aiohttp_session = aiohttp.ClientSession(connector=connector)
-    try:
-        yield aiohttp_session
-    finally:
-        if not aiohttp_session.closed:
-            await aiohttp_session.close()
-
-# Start the bot server in a separate thread when the app starts
-def start_bot_server():
-    bot_server_thread = threading.Thread(target=run_server, daemon=True)
-    bot_server_thread.start()
-
-# Start the bot server when the app starts
-start_bot_server()
-
-@app.route('/api/create-room', methods=['POST'])
-def create_room():
-    """Create a LiveKit room and return tokens"""
-    try:
-        async def create_room_async():
-            async with get_session() as session:
-                # Get LiveKit API client with shared session
-                livekit_api = api.LiveKitAPI(
-                    url=LIVEKIT_URL,
-                    api_key=LIVEKIT_API_KEY,
-                    api_secret=LIVEKIT_API_SECRET,
-                    session=session
-                )
-                
-                # Generate a unique room name
-                room_name = f"appointment-{secrets.token_hex(8)}"
-                
-                # Create the room using the correct API method with CreateRoomRequest
-                room_info = await livekit_api.room.create_room(
-                    api.CreateRoomRequest(
-                        name=room_name,
-                        empty_timeout=300  # 5 minutes timeout
-                    )
-                )
-                
-                # Create token for the bot
-                bot_token = api.AccessToken(
-                    api_key=LIVEKIT_API_KEY,
-                    api_secret=LIVEKIT_API_SECRET
-                ).with_identity("appointment-bot") \
-                 .with_name("Appointment Bot") \
-                 .with_grants(api.VideoGrants(
-                    room_join=True,
-                    room=room_name,
-                    can_publish=True,
-                    can_subscribe=True
-                 )).to_jwt()
-                
-                # Create token for the caller
-                caller_token = api.AccessToken(
-                    api_key=LIVEKIT_API_KEY,
-                    api_secret=LIVEKIT_API_SECRET
-                ).with_identity(f"caller-{secrets.token_hex(4)}") \
-                 .with_name("Caller") \
-                 .with_grants(api.VideoGrants(
-                    room_join=True,
-                    room=room_name,
-                    can_publish=True,
-                    can_subscribe=True
-                 )).to_jwt()
-                
-                # Start the bot in this room
-                bot = AppointmentBot()
-                active_bots[room_name] = bot
-                await bot.connect_to_room(LIVEKIT_URL, bot_token)
-                
-                return {
-                    'room': room_name,
-                    'token': caller_token,
-                    'url': LIVEKIT_URL,
-                    'bot_port': 8000  # Use the fixed port of the shared server
-                }
-
-        # Windows-specific event loop handling
-        if platform.system() == 'Windows':
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        else:
-            loop = asyncio.get_event_loop()
-            
-        try:
-            result = loop.run_until_complete(create_room_async())
-            return jsonify(result)
-        finally:
-            if platform.system() == 'Windows':
-                loop.close()
-                
-    except Exception as e:
-        print(f"Error creating room: {str(e)}")
-        return jsonify({'error': 'Failed to create room'}), 500
-
-@app.route('/api/end-call', methods=['POST'])
-def end_call():
-    """End a call and cleanup resources"""
-    try:
-        async def end_call_async():
-            room_name = request.json.get('room')
-            if room_name in active_bots:
-                bot = active_bots[room_name]
-                # Properly disconnect the bot and cleanup resources
-                await bot.disconnect()
-                del active_bots[room_name]
-                
-                # Delete the room using the correct API method
-                livekit_api = await get_livekit_api()
-                await livekit_api.delete_room(api.DeleteRoomRequest(
-                    room=room_name
-                ))
-                
-            return {'success': True}
-            
-        if platform.system() == 'Windows':
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        else:
-            loop = asyncio.get_event_loop()
-            
-        try:
-            result = loop.run_until_complete(end_call_async())
-            return jsonify(result)
-        finally:
-            if platform.system() == 'Windows':
-                loop.close()
-        
-    except Exception as e:
-        print(f"Error ending call: {str(e)}")
-        return jsonify({'error': 'Failed to end call'}), 500
 
 @app.route('/authorize')
 def authorize():
-    # Clear any existing OAuth state
-    session.pop('oauth_state', None)
-    
-    # Generate and store a random state parameter
-    state = secrets.token_urlsafe(32)
-    session['oauth_state'] = state
-    
+    """Start the OAuth flow"""
     try:
-        if not os.path.exists(CLIENT_SECRETS_FILE):
-            return 'Error: client_secrets.json file not found. Please set up OAuth 2.0 credentials.', 500
-            
-        flow = Flow.from_client_secrets_file(
-            CLIENT_SECRETS_FILE,
-            scopes=SCOPES,
-            redirect_uri=OAUTH_REDIRECT_URI
-        )
-        
-        authorization_url, _ = flow.authorization_url(
+        flow = Flow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES)
+        flow.redirect_uri = OAUTH_REDIRECT_URI
+        authorization_url, state = flow.authorization_url(
             access_type='offline',
-            include_granted_scopes='true',
-            state=state,
-            prompt='consent'  
-        )
-        
+            include_granted_scopes='true')
+        session['state'] = state
+        logger.debug("Generated authorization URL")
         return redirect(authorization_url)
-        
     except Exception as e:
-        return f'Error starting OAuth flow: {str(e)}', 500
+        logger.error(f"Error in authorization: {str(e)}")
+        return jsonify({'error': 'Authorization failed'}), 500
 
 @app.route('/oauth2callback')
 def oauth2callback():
-    # Verify state parameter
-    state = request.args.get('state', None)
-    stored_state = session.get('oauth_state', None)
-    
-    if not state or not stored_state or state != stored_state:
-        return 'Invalid state parameter. Please try again.', 400
-    
+    """Handle the OAuth callback"""
     try:
-        if not os.path.exists(CLIENT_SECRETS_FILE):
-            return 'Error: client_secrets.json file not found', 500
-            
-        flow = Flow.from_client_secrets_file(
-            CLIENT_SECRETS_FILE,
-            scopes=SCOPES,
-            redirect_uri=OAUTH_REDIRECT_URI,
-            state=state
-        )
-        
-        # Fetch OAuth 2.0 tokens
-        flow.fetch_token(
-            authorization_response=request.url,
-            code=request.args.get('code')
-        )
-        
-        # Get credentials and save to session
+        state = session['state']
+        flow = Flow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES, state=state)
+        flow.redirect_uri = OAUTH_REDIRECT_URI
+        authorization_response = request.url
+        flow.fetch_token(authorization_response=authorization_response)
         credentials = flow.credentials
         session['credentials'] = credentials_to_dict(credentials)
-        
-        # Clear OAuth state
-        session.pop('oauth_state', None)
-        
+        logger.debug("Successfully completed OAuth flow")
         return redirect(url_for('home'))
-        
     except Exception as e:
-        error_details = {
-            'error': str(e),
-            'error_description': getattr(e, 'message', 'Unknown error occurred'),
-            'state': state,
-            'code': request.args.get('code'),
-            'scope': request.args.get('scope')
-        }
-        return f'Failed to complete authentication: {json.dumps(error_details, indent=2)}', 400
+        logger.error(f"Error in OAuth callback: {str(e)}")
+        return jsonify({'error': 'OAuth callback failed'}), 500
 
 @app.route('/chat', methods=['POST'])
 @login_required
 def chat():
-    user_input = request.json.get('message', '')
+    data = request.json
+    user_message = data.get('message', '')
     session_id = session.get('session_id')
-    conversation_state = conversation_states.get(session_id)
     
-    if not conversation_state:
-        conversation_state = ConversationState()
-        conversation_states[session_id] = conversation_state
+    if not session_id or session_id not in conversation_states:
+        return jsonify({'error': 'Invalid session'}), 400
     
-    response = prompts.get_ai_response(user_input, conversation_state)
+    state = conversation_states[session_id]
     
-    time_slots = None
-    if prompts.should_check_calendar(response):
-        try:
-            creds = Credentials(**session['credentials'])
-            available_slots = calendar_utils.find_available_slots(
-                creds,
-                conversation_state.meeting_duration or 30,
-                conversation_state.preferred_time
-            )
-            conversation_state.available_slots = available_slots
-            time_slots = [slot.strftime("%A, %B %d at %I:%M %p") for slot in available_slots]
-            response = prompts.format_available_slots(available_slots)
-        except Exception as e:
-            print(f"Error checking calendar: {str(e)}")
-            response = "I apologize, but I encountered an error while checking the calendar. Could you please try again?"
-            time_slots = []
+    # Process the message and update state
+    # This is where you'd integrate with your AI model
+    response = "Message received: " + user_message
     
     return jsonify({
         'response': response,
-        'has_calendar_data': bool(time_slots),
-        'time_slots': time_slots,
         'state': {
-            'has_purpose': bool(conversation_state.purpose),
-            'has_duration': bool(conversation_state.meeting_duration),
-            'has_time': bool(conversation_state.preferred_time),
-            'has_attendees': bool(conversation_state.attendees),
-            'slots_shown': bool(conversation_state.available_slots)
+            'meeting_duration': state.meeting_duration,
+            'preferred_time': state.preferred_time,
+            'attendees': state.attendees,
+            'purpose': state.purpose,
+            'available_slots': state.available_slots
         }
     })
+
+@app.route('/process_speech', methods=['POST'])
+def process_speech():
+    """Process the speech transcript and extract meeting details"""
+    try:
+        data = request.json
+        transcript = data.get('transcript', '')
+        logger.debug(f"Processing speech transcript: {transcript}")
+
+        if not transcript:
+            return jsonify({
+                'success': False,
+                'error': 'No transcript provided'
+            })
+
+        details = extract_meeting_details(transcript)
+        logger.debug(f"Extracted meeting details: {details.to_dict()}")
+        return jsonify({
+            'success': True,
+            'details': details.to_dict()
+        })
+    except Exception as e:
+        logger.error(f"Error processing speech: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Error processing speech: {str(e)}'
+        })
+
+def create_calendar_event(creds, summary, start_time, attendees, duration_minutes=30):
+    """Create a Google Calendar event and send invitations."""
+    try:
+        logger.debug(f"Creating calendar event with summary: {summary}, start_time: {start_time}, attendees: {attendees}")
+        service = build('calendar', 'v3', credentials=creds)
+        
+        # Create event details
+        end_time = start_time + timedelta(minutes=duration_minutes)
+        event = {
+            'summary': summary,
+            'start': {
+                'dateTime': start_time.isoformat(),
+                'timeZone': 'UTC',
+            },
+            'end': {
+                'dateTime': end_time.isoformat(),
+                'timeZone': 'UTC',
+            },
+            'attendees': [{'email': email} for email in attendees],
+            'reminders': {
+                'useDefault': True
+            },
+            'sendUpdates': 'all'  # This ensures that attendees receive email invitations
+        }
+
+        logger.debug(f"Sending calendar event request with data: {event}")
+        event = service.events().insert(calendarId='primary', body=event).execute()
+        logger.debug(f"Successfully created event with link: {event['htmlLink']}")
+        return True, event['htmlLink']
+    except Exception as e:
+        logger.error(f"Error creating calendar event: {str(e)}")
+        return False, str(e)
 
 @app.route('/schedule', methods=['POST'])
 @login_required
 def schedule_meeting():
-    slot_data = request.json
-    slot_index = slot_data.get('slot_index')
-    session_id = session.get('session_id')
-    conversation_state = conversation_states.get(session_id)
-    
-    if not conversation_state or slot_index is None or slot_index >= len(conversation_state.available_slots):
-        return jsonify({
-            'success': False, 
-            'message': 'Invalid time slot. Please choose a valid option.'
-        })
-    
-    selected_time = conversation_state.available_slots[slot_index]
-    creds = Credentials(**session['credentials'])
-    
-    success, message = calendar_utils.schedule_meeting(
-        creds,
-        start_time=selected_time,
-        duration=conversation_state.meeting_duration or 30,
-        attendees=conversation_state.attendees,
-        purpose=conversation_state.purpose or "Scheduled Meeting"
-    )
-    
-    if success:
-        conversation_states[session_id] = ConversationState()
-    
-    return jsonify({
-        'success': success,
-        'message': message
-    })
+    """Schedule the meeting using the extracted details"""
+    try:
+        data = request.json
+        logger.debug(f"Received scheduling request with data: {data}")
+        
+        if not all(key in data for key in ['purpose', 'date', 'time', 'attendees']):
+            logger.warning("Missing required meeting details")
+            return jsonify({
+                'success': False,
+                'error': 'Missing required meeting details'
+            })
 
-# Cleanup function for the aiohttp session
-@app.teardown_appcontext
-def cleanup_session(exception=None):
-    global aiohttp_session
-    if aiohttp_session is not None and not aiohttp_session.closed:
-        if platform.system() == 'Windows':
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        else:
-            loop = asyncio.get_event_loop()
-            
+        creds = get_calendar_credentials()
+        if not creds:
+            logger.warning("No valid credentials found")
+            return jsonify({
+                'success': False,
+                'error': 'Not authenticated with Google Calendar'
+            })
+
+        # Convert date and time to datetime
         try:
-            async def close_session():
-                await aiohttp_session.close()
-                
-            loop.run_until_complete(close_session())
-        finally:
-            if platform.system() == 'Windows':
-                loop.close()
-            aiohttp_session = None
+            meeting_datetime = parser.parse(f"{data['date']} {data['time']}")
+            logger.debug(f"Parsed meeting datetime: {meeting_datetime}")
+        except Exception as e:
+            logger.error(f"Error parsing datetime: {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': f'Invalid date or time format: {str(e)}'
+            })
+        
+        # Create the calendar event
+        success, result = create_calendar_event(
+            creds,
+            summary=data['purpose'],
+            start_time=meeting_datetime,
+            attendees=data['attendees']
+        )
+
+        if success:
+            logger.info("Successfully scheduled meeting")
+            return jsonify({
+                'success': True,
+                'message': 'Meeting scheduled successfully',
+                'calendar_link': result
+            })
+        else:
+            logger.error(f"Failed to schedule meeting: {result}")
+            return jsonify({
+                'success': False,
+                'error': f'Failed to schedule meeting: {result}'
+            })
+    except Exception as e:
+        logger.error(f"Unexpected error in schedule_meeting: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Error scheduling meeting: {str(e)}'
+        })
+
+@app.route('/start-call', methods=['POST'])
+async def start_call():
+    """Start a phone call with the specified number"""
+    data = request.json
+    phone_number = data.get('phone_number')
+    
+    if not phone_number:
+        return jsonify({'error': 'Phone number is required'}), 400
+    
+    global bot
+    bot = VoiceBot()
+    result = await bot.start_call(phone_number)
+    
+    if result:
+        return jsonify({
+            'status': 'success',
+            'call_id': result['call_id']
+        })
+    else:
+        return jsonify({'error': 'Failed to start call'}), 500
+
+@app.route('/send-message', methods=['POST'])
+async def send_message():
+    """Send a message during the active call"""
+    if not bot:
+        return jsonify({'error': 'No active call'}), 400
+    
+    data = request.json
+    message = data.get('message')
+    
+    if not message:
+        return jsonify({'error': 'Message is required'}), 400
+    
+    result = await bot.send_message(message)
+    
+    if result:
+        return jsonify({'status': 'success'})
+    else:
+        return jsonify({'error': 'Failed to send message'}), 500
+
+@app.route('/end-call', methods=['POST'])
+async def end_call():
+    """End the current call"""
+    if not bot:
+        return jsonify({'error': 'No active call'}), 400
+    
+    result = await bot.end_call()
+    
+    if result:
+        return jsonify({'status': 'success'})
+    else:
+        return jsonify({'error': 'Failed to end call'}), 500
+
+@app.route('/call-status', methods=['GET'])
+async def call_status():
+    """Get the current call status"""
+    if not bot:
+        return jsonify({'error': 'No active call'}), 400
+    
+    status = await bot.get_call_status()
+    
+    if status:
+        return jsonify(status)
+    else:
+        return jsonify({'error': 'Failed to get call status'}), 500
 
 if __name__ == '__main__':
-    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    app.run(debug=True)
