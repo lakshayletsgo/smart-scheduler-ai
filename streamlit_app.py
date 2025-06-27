@@ -16,7 +16,6 @@ import json
 import logging
 from voice_bot import VoiceBot
 import asyncio
-from spacy.matcher import Matcher
 import sys
 import en_core_web_sm
 
