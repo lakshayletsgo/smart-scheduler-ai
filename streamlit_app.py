@@ -125,42 +125,97 @@ class MeetingDetails:
             'attendees': self.attendees
         }
 
+    def __str__(self):
+        return f"MeetingDetails(purpose={self.purpose}, date={self.date}, time={self.time}, duration={self.duration}, attendees={self.attendees})"
+
 def extract_meeting_details(text):
-    """Extract meeting details using regex patterns"""
+    """Extract meeting details using improved regex patterns and date parsing."""
     details = MeetingDetails()
-    
-    # Extract duration using regex
-    duration_match = re.search(r'(\d+)\s*(hour|hr|min|minutes?)', text.lower())
+    logger.debug(f"Extracting details from: {text}")
+
+    # Extract duration with improved patterns
+    duration_match = re.search(r'(\d+)\s*(hour|hr|min|minutes?|hrs?)', text.lower())
     if duration_match:
         amount = int(duration_match.group(1))
         unit = duration_match.group(2)
-        if unit.startswith('hour') or unit == 'hr':
-            details.duration = amount * 60
-        else:
-            details.duration = amount
+        if unit.startswith(('hour', 'hr')):
+            amount *= 60
+        details.duration = amount
+        logger.debug(f"Extracted duration: {amount} minutes")
 
-    # Extract date/time using dateparser
+    # Extract date/time using dateparser with improved settings
     try:
-        parsed_date = parser.parse(text, settings={'PREFER_DATES_FROM': 'future'})
-        if parsed_date:
+        # First try to find explicit time patterns
+        time_match = re.search(r'at\s+(\d{1,2}(?::\d{2})?(?:\s*[ap]m)?)', text, re.I)
+        time_str = time_match.group(1) if time_match else None
+
+        # Try to find explicit date patterns
+        date_match = re.search(r'(?:on\s+)?(next\s+)?(\w+day|tomorrow|next week|today)', text, re.I)
+        date_str = date_match.group(0) if date_match else None
+
+        # Combine date and time if found separately
+        if date_str or time_str:
+            parse_str = f"{date_str or 'today'} {time_str or '9am'}"
+        else:
+            parse_str = text
+
+        parsed_date = parser.parse(
+            parse_str,
+            settings={
+                'PREFER_DATES_FROM': 'future',
+                'RELATIVE_BASE': datetime.now(),
+                'PREFER_DAY_OF_MONTH': 'first',
+                'DATE_ORDER': 'MDY'
+            }
+        )
+
+        if parsed_date and parsed_date > datetime.now():
             details.date = parsed_date.strftime('%Y-%m-%d')
             details.time = parsed_date.strftime('%H:%M')
-    except:
-        pass
+            logger.debug(f"Extracted date/time: {details.date} {details.time}")
 
-    # Extract purpose (simple heuristic - take the first sentence that doesn't contain time/date)
-    sentences = re.split(r'[.!?]+', text)
-    for sentence in sentences:
-        # Skip sentences with time/date indicators
-        if not re.search(r'\b(today|tomorrow|next|at|on|pm|am|:\d{2}|\d{1,2}(?::\d{2})?)\b', sentence.lower()):
-            purpose = sentence.strip()
-            if purpose:
-                details.purpose = purpose
-                break
+    except Exception as e:
+        logger.error(f"Error parsing date/time: {e}")
 
     # Extract email addresses
-    details.attendees = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', text)
-    
+    email_pattern = r'\b[\w\.-]+@[\w\.-]+\.\w+\b'
+    emails = re.findall(email_pattern, text)
+    if emails:
+        details.attendees = emails
+        logger.debug(f"Extracted attendees: {emails}")
+
+    # Extract purpose with improved patterns
+    purpose_patterns = [
+        r'(?:schedule|set up|arrange|plan|organize|book).*?(?:meeting|call|session)\s+(?:for|about|to discuss|regarding)\s+(.*?)(?=\s+(?:with|at|on|by|\.|\?|$))',
+        r'(?:need|want|would like).*?(?:meeting|call|session)\s+(?:for|about|to discuss|regarding)\s+(.*?)(?=\s+(?:with|at|on|by|\.|\?|$))',
+        r'(?:purpose|topic|agenda|discuss|about)\s+(?:is|will be|would be)?\s+(.*?)(?=\s+(?:with|at|on|by|\.|\?|$))',
+        r'(?:to discuss|discuss about|talk about|regarding)\s+(.*?)(?=\s+(?:with|at|on|by|\.|\?|$))'
+    ]
+
+    for pattern in purpose_patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            purpose = match.group(1).strip()
+            # Clean up the purpose text
+            purpose = re.sub(r'^(the|a|an|some|this|that|these|those|my|our|their)\s+', '', purpose, flags=re.I)
+            if purpose and len(purpose) > 3:
+                details.purpose = purpose
+                logger.debug(f"Extracted purpose: {purpose}")
+                break
+
+    # If no purpose found with patterns, try first sentence without time/date/email
+    if not details.purpose:
+        sentences = re.split(r'[.!?]+', text)
+        for sentence in sentences:
+            # Skip if sentence contains time/date/email indicators
+            if not re.search(r'\b(?:today|tomorrow|next|at|on|pm|am|:\d{2}|\d{1,2}(?::\d{2})?|@)\b', sentence.lower()):
+                purpose = sentence.strip()
+                if purpose and len(purpose) > 3:
+                    details.purpose = purpose
+                    logger.debug(f"Extracted purpose from sentence: {purpose}")
+                    break
+
+    logger.debug(f"Final extracted details: {details}")
     return details
 
 # Initialize session state
@@ -330,6 +385,8 @@ def process_message(message):
     """Process user message and return AI response"""
     # Get the current state from session state
     state = st.session_state.conversation_state
+    logger.debug(f"Processing message: {message}")
+    logger.debug(f"Current state: {state.to_dict()}")
     
     # Handle reset command
     if message.lower() in ['reset', 'start over', 'restart']:
@@ -345,87 +402,90 @@ def process_message(message):
     state_updated = False
     
     # Update state with extracted information
+    if details.purpose and not state.purpose:
+        state.purpose = details.purpose
+        state.answered_questions.add('purpose')
+        response_parts.append(f"I understand the purpose is: {details.purpose}")
+        state_updated = True
+        logger.debug(f"Updated purpose: {details.purpose}")
+    
+    if details.duration and not state.meeting_duration:
+        state.meeting_duration = details.duration
+        state.answered_questions.add('duration')
+        response_parts.append(f"Meeting duration set to {details.duration} minutes")
+        state_updated = True
+        logger.debug(f"Updated duration: {details.duration}")
+    
     if details.date and details.time and not state.preferred_time:
         try:
             date_obj = datetime.strptime(details.date, '%Y-%m-%d')
             time_obj = datetime.strptime(details.time, '%H:%M').time()
             preferred_time = datetime.combine(date_obj.date(), time_obj)
-            state.preferred_time = {
-                'start': preferred_time,
-                'end': preferred_time + timedelta(minutes=state.meeting_duration or 30)
-            }
-            state.answered_questions.add('time')
-            response_parts.append(f"I've noted the time: {preferred_time.strftime('%A, %B %d at %I:%M %p')}")
-            state_updated = True
+            
+            # Only accept future dates
+            if preferred_time > datetime.now():
+                state.preferred_time = {
+                    'start': preferred_time,
+                    'end': preferred_time + timedelta(minutes=state.meeting_duration or 30)
+                }
+                state.answered_questions.add('time')
+                response_parts.append(f"Meeting time set to: {preferred_time.strftime('%A, %B %d at %I:%M %p')}")
+                state_updated = True
+                logger.debug(f"Updated time: {preferred_time}")
         except ValueError as e:
             logger.error(f"Error parsing date/time: {e}")
     
-    # Check for duration in the message
-    duration_match = re.search(r'(\d+)\s*(hour|hr|min|minutes?)', message.lower())
-    if duration_match and not state.meeting_duration:
-        amount = int(duration_match.group(1))
-        unit = duration_match.group(2)
-        if unit.startswith('hour') or unit == 'hr':
-            amount *= 60
-        state.meeting_duration = amount
-        state.answered_questions.add('duration')
-        response_parts.append(f"Meeting duration set to {amount} minutes")
-        state_updated = True
+    if details.attendees:
+        new_attendees = [email for email in details.attendees if email not in state.attendees]
+        if new_attendees:
+            state.attendees.update(new_attendees)
+            state.answered_questions.add('attendees')
+            attendee_list = "\n".join([f"• {attendee}" for attendee in new_attendees])
+            response_parts.append(f"Added attendees:\n{attendee_list}")
+            state_updated = True
+            logger.debug(f"Updated attendees: {new_attendees}")
     
-    # Update attendees if provided
-    if details.attendees and not state.attendees:
-        state.attendees.extend(details.attendees)
-        state.attendees = list(dict.fromkeys(state.attendees))  # Remove duplicates
-        state.answered_questions.add('attendees')
-        attendee_list = "\n".join([f"• {attendee}" for attendee in state.attendees])
-        response_parts.append(f"Added attendees:\n{attendee_list}")
-        state_updated = True
-    
-    # Update purpose if provided
-    if details.purpose and not state.purpose:
-        state.purpose = details.purpose
-        state.answered_questions.add('purpose')
-        response_parts.append(f"Purpose noted: {details.purpose}")
-        state_updated = True
-
     # Log current state for debugging
-    logger.debug(f"Current state: purpose={state.purpose}, time={state.preferred_time}, attendees={state.attendees}, duration={state.meeting_duration}")
+    logger.debug(f"Updated state: {state.to_dict()}")
     
-    # If we have all required information, show available slots
+    # If we have all required information, proceed with scheduling
     if state.is_complete() and not state.slots_shown:
         creds = st.session_state.credentials
         if creds:
-            # If a specific time was requested, don't show available slots
+            # If a specific time was requested, try to schedule directly
             if state.preferred_time:
-                # Create the calendar event directly
                 try:
-                    event = calendar_utils.create_calendar_event(
+                    success = calendar_utils.create_calendar_event(
                         creds,
                         summary=state.purpose,
                         start_time=state.preferred_time['start'],
-                        attendees=state.attendees,
-                        duration_minutes=state.meeting_duration or 30
+                        attendees=list(state.attendees),
+                        duration_minutes=state.meeting_duration
                     )
-                    if event:
-                        state.slots_shown = True  # Mark as complete
-                        return f"Great! I've scheduled the meeting for {state.preferred_time['start'].strftime('%A, %B %d at %I:%M %p')}.\n\nThe calendar invites have been sent to the attendees."
-                    else:
-                        return "Sorry, that time slot isn't available. Would you like to see available time slots instead?"
+                    if success:
+                        response = f"✅ Perfect! I've scheduled the meeting:\n\n"
+                        response += f"📝 Purpose: {state.purpose}\n"
+                        response += f"📅 Time: {state.preferred_time['start'].strftime('%A, %B %d at %I:%M %p')}\n"
+                        response += f"🕒 Duration: {state.meeting_duration} minutes\n"
+                        response += f"📧 Attendees:\n" + "\n".join([f"• {attendee}" for attendee in state.attendees])
+                        response += "\n\nI've sent calendar invites to all attendees."
+                        state.reset()  # Reset state for next meeting
+                        return response
                 except Exception as e:
                     logger.error(f"Error creating calendar event: {e}")
-                    return "Sorry, there was an error creating the calendar event. Please try again."
-            else:
-                # Only show available slots if no specific time was requested
-                available_slots = calendar_utils.find_available_slots(
+                    return "I apologize, but that time slot isn't available. Would you like to see available time slots instead?"
+            
+            # Show available slots if no specific time or if scheduling failed
+            available_slots = calendar_utils.find_available_slots(
                 creds,
                 start_time=state.preferred_time['start'] if state.preferred_time else None,
                 duration_minutes=state.meeting_duration or 30,
-                attendees=state.attendees
+                attendees=list(state.attendees)
             )
             state.available_slots = available_slots
             state.slots_shown = True
             state.current_step = 'showing_slots'
-            return prompts.format_available_slots(available_slots).replace("<br>", "\n")
+            return prompts.format_available_slots(available_slots)
         else:
             return "Please authorize access to Google Calendar first."
     
@@ -445,7 +505,7 @@ def process_message(message):
                 response_parts.append("Who would you like to invite to this meeting? (Please provide email addresses)")
         return "\n".join(response_parts)
     
-    # If no state was updated, ask for missing information
+    # If no state was updated but we're missing information, ask for it
     next_question = state.get_next_question()
     if next_question:
         if next_question == 'purpose':
@@ -457,8 +517,12 @@ def process_message(message):
         elif next_question == 'attendees':
             return "Who would you like to invite to this meeting? (Please provide email addresses)"
     
-    # If we get here, something went wrong with the state
-    return "I'm not sure what information you're providing. Could you please be more specific?"
+    # If we get here, we couldn't understand the input
+    return "I'm not sure what information you're providing. Could you please be more specific? Here's what I have so far:\n\n" + \
+           (f"📝 Purpose: {state.purpose}\n" if state.purpose else "") + \
+           (f"🕒 Duration: {state.meeting_duration} minutes\n" if state.meeting_duration else "") + \
+           (f"📅 Time: {state.preferred_time['start'].strftime('%A, %B %d at %I:%M %p')}\n" if state.preferred_time else "") + \
+           (f"📧 Attendees: {', '.join(state.attendees)}\n" if state.attendees else "")
 
 def show_voice_interface():
     """Display the voice interface"""
