@@ -1,2 +1,9 @@
 python3-dev
-build-essential 
+build-essential
+gcc
+g++
+cmake
+gfortran
+git
+libatlas-base-dev
+libboost-all-dev 
