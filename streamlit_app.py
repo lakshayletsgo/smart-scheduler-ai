@@ -47,11 +47,11 @@ SCOPES = ['https://www.googleapis.com/auth/calendar.readonly',
 
 # Get the deployment URL from Streamlit's environment or use localhost as fallback
 def get_oauth_redirect_uri():
+    """Get the OAuth redirect URI that matches the client_secrets.json configuration"""
+    # Use the production URL if available, otherwise fallback to localhost
     if os.getenv('STREAMLIT_SERVER_URL'):
-        base_url = os.getenv('STREAMLIT_SERVER_URL')
-    else:
-        base_url = 'http://localhost:8501'
-    return f"{base_url}/oauth2callback"
+        return "https://lakshayletsgo-smart-scheduler-ai-streamlit-app-xrbctg.streamlit.app/oauth2callback"
+    return "http://localhost:5000/oauth2callback"
 
 class ConversationState:
     def __init__(self):

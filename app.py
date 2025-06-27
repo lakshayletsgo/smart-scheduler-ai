@@ -38,7 +38,7 @@ app.secret_key = os.urandom(24)
 CLIENT_SECRETS_FILE = os.path.join(os.path.dirname(__file__), 'client_secrets.json')
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly',
           'https://www.googleapis.com/auth/calendar.events']
-OAUTH_REDIRECT_URI = 'http://127.0.0.1:5000/oauth2callback'
+OAUTH_REDIRECT_URI = 'https://lakshayletsgo-smart-scheduler-ai-streamlit-app-xrbctg.streamlit.app/oauth2callback'
 
 # Store active bot instance
 bot = None
