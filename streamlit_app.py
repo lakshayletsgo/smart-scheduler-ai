@@ -77,6 +77,24 @@ class ConversationState:
             and len(self.attendees) > 0
         )
 
+    def get_missing_info(self):
+        """Get a list of all missing pieces of information."""
+        missing = []
+        if self.purpose is None:
+            missing.append('purpose')
+        if self.meeting_duration is None:
+            missing.append('duration')
+        if self.preferred_time is None:
+            missing.append('time')
+        if not self.attendees:
+            missing.append('attendees')
+        return missing
+
+    def get_next_question(self):
+        """Get the next piece of information we need to ask for."""
+        missing = self.get_missing_info()
+        return missing[0] if missing else None
+
     def to_dict(self):
         return {
             'purpose': self.purpose,
