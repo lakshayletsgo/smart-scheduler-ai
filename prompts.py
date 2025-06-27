@@ -4,6 +4,8 @@ import re
 from datetime import datetime, timedelta
 import dateparser
 import os
+import streamlit as st
+import calendar_utils
 
 # Initialize Gemini
 genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
@@ -87,6 +89,192 @@ def get_info_status(state):
         "attendees": "✅ Set" if state.attendees else "❌ Missing"
     }
 
+def format_meeting_details(state):
+    """Format current meeting details in a beautiful way"""
+    sections = []
+    
+    if state.purpose:
+        sections.append(f"Purpose: {state.purpose}")
+    
+    if state.meeting_duration:
+        sections.append(f"Duration: {state.meeting_duration} minutes")
+    
+    if state.preferred_time:
+        time_str = state.preferred_time['start'].strftime('%A, %B %d at %I:%M %p')
+        sections.append(f"Preferred time: {time_str}")
+    
+    if state.attendees:
+        sections.append(f"Attendees: {', '.join(state.attendees)}")
+    
+    if sections:
+        details = [
+            "━━━ Current Meeting Details ━━━",
+            "",  # Empty line for spacing
+        ]
+        for section in sections:
+            details.append(f"{section}")
+            details.append("")  # Add spacing between sections
+        
+        return "\n".join(details)
+    return ""
+
+def format_missing_info(missing):
+    """Format missing information in a beautiful way"""
+    if not missing:
+        return ""
+        
+    emoji_map = {
+        'purpose': '📝',
+        'duration': '⏱️',
+        'time': '🗓️',
+        'attendees': '👥'
+    }
+    
+    items = [f"{emoji_map[item]} {item.title()}" for item in missing]
+    return "\n\n━━━ Still Needed ━━━\n\n" + "\n".join(f"• {item}" for item in items) + "\n"
+
+def format_initial_greeting():
+    """Format the initial greeting with proper line breaks"""
+    lines = [
+        "━━━ Welcome! ━━━",
+        "",
+        "👋 Hello! I'm your AI scheduling assistant.",
+        "",
+        "I'll help you schedule your meeting. Let's get started!",
+        "",
+        "What's the purpose of your meeting?",
+        ""
+    ]
+    return "<br>".join(lines)
+
+def format_info_request(info_type):
+    """Format information request messages with proper line breaks"""
+    messages = {
+        'purpose': [
+            "━━━ Meeting Purpose ━━━<br>",
+            "<br>",
+            "Could you tell me what the meeting is about?<br>",
+            "<br>",
+            "For example:<br>",
+            "• Team sync discussion<br>",
+            "• Project planning<br>",
+            "• Client presentation<br>",
+            "<br>"
+        ],
+        'duration': [
+            "━━━ Meeting Duration ━━━<br>",
+            "<br>",
+            "How long would you like the meeting to be?<br>",
+            "<br>",
+            "For example:<br>",
+            "• 30 minutes (default)<br>",
+            "• 1 hour<br>",
+            "• 45 minutes<br>",
+            "<br>"
+        ],
+        'time': [
+            "━━━ Meeting Time ━━━<br>",
+            "<br>",
+            "When would you like to schedule the meeting?<br>",
+            "<br>",
+            "For example:<br>",
+            "• Tomorrow at 2pm<br>",
+            "• Next Monday morning<br>",
+            "• This Friday afternoon<br>",
+            "<br>"
+        ],
+        'attendees': [
+            "━━━ Meeting Attendees ━━━<br>",
+            "<br>",
+            "Who would you like to invite to the meeting?<br>",
+            "<br>",
+            "Please provide email addresses, for example:<br>",
+            "• john@example.com<br>",
+            "• sarah@example.com, mike@example.com<br>",
+            "<br>"
+        ]
+    }
+    
+    if info_type in messages:
+        return "\n".join(messages[info_type])
+    return "Could you provide more information?<br>"
+
+def format_available_slots(slots):
+    """Format available time slots in a beautiful way"""
+    if not slots:
+        return "No available slots found."
+    
+    formatted = [
+        "━━━ Available Time Slots ━━━",
+        ""  # Empty line for spacing
+    ]
+    
+    for i, slot in enumerate(slots, 1):
+        slot_str = slot.strftime('%A, %B %d at %I:%M %p')
+        formatted.append(f"{i}. {slot_str}")
+    
+    return "\n".join(formatted)
+
+def format_confirmation(state, slot_time):
+    """Format the confirmation message with proper line breaks"""
+    lines = [
+        "━━━ Meeting Confirmation ━━━<br>",
+        "<br>",
+        "🎉 Perfect! Here's your meeting summary:<br>",
+        "<br>",
+        f"📅 Time: {slot_time}<br>",
+        f"📝 Purpose: {state.purpose}<br>",
+        f"⏱️ Duration: {state.meeting_duration} minutes<br>",
+        f"👥 Attendees: {', '.join(state.attendees)}<br>",
+        "<br>",
+        "━━━ Confirm Scheduling ━━━<br>",
+        "<br>",
+        "Should I go ahead and schedule this meeting? (yes/no)<br>",
+        "<br>"
+    ]
+    return "\n".join(lines)
+
+def format_success_message(calendar_link):
+    """Format the success message with proper line breaks"""
+    lines = [
+        "━━━ Meeting Scheduled! ━━━<br>",
+        "<br>",
+        "✅ Success! Your meeting has been scheduled.<br>",
+        "<br>",
+        "📨 Calendar invitations have been sent to all attendees.<br>",
+        f"🔗 View in Calendar: {calendar_link}<br>",
+        "<br>",
+        "━━━ Anything Else? ━━━<br>",
+        "<br>",
+        "Is there anything else I can help you with?<br>",
+        "<br>"
+    ]
+    return "\n".join(lines)
+
+def format_error_message(error_type="general"):
+    """Format error messages"""
+    messages = {
+        "no_credentials": """━━━ Authentication Required ━━━
+
+🔒 Please sign in to your Google Calendar to continue.
+
+I'll help you schedule the meeting once you're signed in.
+""",
+        "calendar_error": """━━━ Calendar Error ━━━
+
+❌ There was an error accessing the calendar.
+
+Please try again or check your calendar permissions.
+""",
+        "general": """━━━ Error ━━━
+
+❌ Something went wrong.
+
+Please try again or start over by typing "reset".
+"""
+    }
+    return messages.get(error_type, messages["general"])
+
 def get_ai_response(user_input, conversation_state):
     """
     Get AI response using Gemini model and update conversation state.
@@ -96,26 +284,15 @@ def get_ai_response(user_input, conversation_state):
         conversation_state: ConversationState object to maintain context
     
     Returns:
-        AI response text
+        dict containing extracted information and response text
     """
     # Extract information from user input
     duration = extract_duration(user_input)
-    if duration and not conversation_state.meeting_duration:
-        conversation_state.meeting_duration = duration
-    
     preferred_time = extract_time_expression(user_input)
-    if preferred_time and not conversation_state.preferred_time:
-        conversation_state.preferred_time = {
-            'start': preferred_time,
-            'end': preferred_time + timedelta(days=7)  # Look for slots within a week
-        }
-    
     emails = extract_emails(user_input)
-    if emails:
-        # Remove duplicates while preserving order
-        conversation_state.attendees = list(dict.fromkeys(conversation_state.attendees + emails))
+    purpose = None
     
-    # Extract purpose from user input if not already set
+    # Extract purpose if not already set
     if not conversation_state.purpose:
         # Common patterns for purpose extraction
         purpose_patterns = [
@@ -133,21 +310,68 @@ def get_ai_response(user_input, conversation_state):
                 filler_words = r'^(the|a|an|some|this|that|these|those|my|our|their)\s+'
                 extracted_purpose = re.sub(filler_words, '', extracted_purpose, flags=re.I)
                 if extracted_purpose and len(extracted_purpose) > 3:  # Ensure we have a meaningful purpose
-                    conversation_state.purpose = extracted_purpose
+                    purpose = extracted_purpose
                     break
+    
+    # Prepare response data
+    response_data = {
+        'response': '',  # Will be set below
+        'purpose': purpose,
+        'duration': duration,
+        'time': {'start': preferred_time, 'end': preferred_time + timedelta(days=7)} if preferred_time else None,
+        'attendees': emails
+    }
     
     # Get current information status
     info_status = get_info_status(conversation_state)
+    missing_info = [k for k, v in info_status.items() if v == "❌ Missing"]
     
     # Format current context
     context = f"""Current meeting details:
 • Purpose: {conversation_state.purpose or 'Not specified'}
 • Duration: {conversation_state.meeting_duration} minutes
 • Preferred time: {conversation_state.preferred_time['start'].strftime('%Y-%m-%d %H:%M') if conversation_state.preferred_time else 'Not specified'}
-• Attendees: {', '.join(conversation_state.attendees) if conversation_state.attendees else 'Not specified'}"""
+• Attendees: {', '.join(conversation_state.attendees) if conversation_state.attendees else 'Not specified'}
+• Current step: {conversation_state.current_step}"""
     
-    # Format messages for Gemini API
-    prompt = f"""{SYSTEM_PROMPT}
+    # Determine appropriate response based on state
+    if conversation_state.current_step == 'initial':
+        response_data['response'] = format_initial_greeting()
+    
+    elif conversation_state.current_step == 'gathering_info':
+        if missing_info:
+            next_info = missing_info[0]
+            response_data['response'] = format_info_request(next_info)
+            
+            # Add current meeting details if we have any
+            details = format_meeting_details(conversation_state)
+            if details:
+                response_data['response'] += "\n" + details
+            
+            # Add remaining missing info
+            missing_info_str = format_missing_info(missing_info[1:])
+            if missing_info_str:
+                response_data['response'] += missing_info_str
+        else:
+            response_data['response'] = """🔍 Great! I have all the information needed.
+
+Let me check calendar availability for everyone..."""
+    
+    elif conversation_state.current_step == 'showing_slots':
+        if not conversation_state.available_slots:
+            response_data['response'] = """❌ I couldn't find any available slots.
+
+Would you like to:
+1. Try different dates
+2. Adjust the meeting duration
+3. Start over
+
+Just let me know what you prefer!"""
+    
+    # If no specific response was set, get one from the AI model
+    if not response_data['response']:
+        # Format messages for Gemini API
+        prompt = f"""{SYSTEM_PROMPT}
 
 Required information status:
 {chr(10).join(f"• {k}: {v}" for k, v in info_status.items())}
@@ -156,31 +380,12 @@ Previous context:
 {context}
 
 User: {user_input}"""
+        
+        # Get AI response
+        response = model.generate_content(prompt)
+        response_data['response'] = response.text
     
-    # Get AI response
-    response = model.generate_content(prompt)
-    ai_response = response.text
-    
-    # Update conversation state based on AI response if we still don't have a purpose
-    if not conversation_state.purpose and "purpose" in ai_response.lower():
-        for pattern in purpose_patterns:
-            match = re.search(pattern, ai_response, re.I)
-            if match:
-                extracted_purpose = match.group(1).strip()
-                filler_words = r'^(the|a|an|some|this|that|these|those|my|our|their)\s+'
-                extracted_purpose = re.sub(filler_words, '', extracted_purpose, flags=re.I)
-                if extracted_purpose and len(extracted_purpose) > 3:
-                    conversation_state.purpose = extracted_purpose
-                    break
-    
-    # Check if we have all required information
-    all_info_ready = all(value == "✅ Set" for value in info_status.values())
-    
-    # If we have all information and no slots shown yet, trigger calendar check
-    if all_info_ready and not conversation_state.available_slots:
-        return "Great! Let me check the calendar for available slots."
-    
-    return ai_response
+    return response_data
 
 def should_check_calendar(ai_response):
     """Determine if we should check calendar availability based on AI response."""
@@ -196,22 +401,82 @@ def should_check_calendar(ai_response):
     
     return any(re.search(pattern, ai_response.lower()) for pattern in check_patterns)
 
-def format_available_slots(slots):
-    """Format available time slots into a human-readable response."""
-    if not slots:
-        return "I couldn't find any available time slots matching your criteria. Would you like to try different times?"
+def get_next_question(state):
+    """Get the next question to ask based on conversation state"""
+    next_q = state.get_next_question()
     
-    formatted_slots = []
-    for slot in slots[:5]:  # Limit to 5 suggestions
-        formatted_slots.append(slot.strftime("%A, %B %d at %I:%M %p"))
+    if next_q == 'purpose':
+        return "What's the purpose of your meeting?"
+    elif next_q == 'duration':
+        return "How long would you like the meeting to be (in minutes)?"
+    elif next_q == 'time':
+        return "When would you like to schedule the meeting?"
+    elif next_q == 'attendees':
+        return "Who would you like to invite to the meeting? (Please provide email addresses)"
     
-    response = "📅 Here are the best available time slots I found:\n\n"
-    for i, slot in enumerate(formatted_slots, 1):
-        response += f"🕒 Option {i}: {slot}\n"
+    return None
+
+def process_user_message(message, state):
+    """Process user message and update state"""
+    # Your existing message processing logic here
+    # Update to work with Streamlit's session state
     
-    response += "\n✨ When you choose a slot:\n"
-    response += "1. The meeting will be automatically added to your Google Calendar\n"
-    response += "2. All attendees will receive an email invitation\n"
-    response += "3. You can manage the meeting directly from your Google Calendar\n\n"
-    response += "Which time slot would you prefer? (Just reply with the option number 1-5)"
-    return response 
+    response = ""
+    
+    # If we have all required information
+    if state.is_complete():
+        if not state.slots_shown:
+            # Get available slots from calendar
+            creds = st.session_state.credentials
+            if creds:
+                slots = calendar_utils.find_available_slots(
+                    creds,
+                    state.attendees,
+                    state.preferred_time,
+                    state.meeting_duration
+                )
+                state.available_slots = slots
+                response = format_available_slots(slots)
+                state.slots_shown = True
+        else:
+            # Handle slot selection
+            try:
+                slot_num = int(message.strip())
+                if 1 <= slot_num <= len(state.available_slots):
+                    state.selected_slot = state.available_slots[slot_num - 1]
+                    response = "Great! I'll schedule the meeting. Here's a summary:\n\n"
+                    response += format_meeting_details(state)
+                else:
+                    response = "Please select a valid slot number."
+            except ValueError:
+                response = "Please select a slot by entering its number."
+    
+    # If we still need more information
+    if not response:
+        next_question = get_next_question(state)
+        if next_question:
+            response = next_question
+        else:
+            response = "I'm not sure what to ask next. Let me show you the current details:\n\n"
+            response += format_meeting_details(state)
+    
+    return response
+
+def format_confirmation_message(state):
+    """Format the meeting confirmation message"""
+    if not state.selected_slot:
+        return "No slot selected yet."
+    
+    message = [
+        "━━━ Meeting Scheduled! ━━━",
+        "",
+        f"Purpose: {state.purpose}",
+        f"Date: {state.selected_slot.strftime('%A, %B %d')}",
+        f"Time: {state.selected_slot.strftime('%I:%M %p')}",
+        f"Duration: {state.meeting_duration} minutes",
+        f"Attendees: {', '.join(state.attendees)}",
+        "",
+        "I've sent calendar invites to all attendees."
+    ]
+    
+    return "\n".join(message) 

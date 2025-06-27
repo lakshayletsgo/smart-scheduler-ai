@@ -108,11 +108,95 @@ def login_required(f):
 
 class ConversationState:
     def __init__(self):
+        self.reset()
+    
+    def reset(self):
+        """Reset the conversation state"""
         self.meeting_duration = None
         self.preferred_time = None
         self.attendees = []
         self.purpose = None
         self.available_slots = []
+        self.current_step = 'initial'
+        self.last_question_asked = None
+        self.slots_shown = False
+        self.selected_slot = None
+        self.meeting_confirmed = False
+        self.answered_questions = set()  # Track which questions have been answered
+    
+    def update_from_response(self, response_data):
+        """Update state based on AI response data"""
+        if 'purpose' in response_data and response_data['purpose']:
+            self.purpose = response_data['purpose']
+            self.answered_questions.add('purpose')
+            
+        if 'duration' in response_data and response_data['duration']:
+            self.meeting_duration = response_data['duration']
+            self.answered_questions.add('duration')
+            
+        if 'time' in response_data and response_data['time']:
+            self.preferred_time = response_data['time']
+            self.answered_questions.add('time')
+            
+        if 'attendees' in response_data and response_data['attendees']:
+            new_attendees = response_data['attendees']
+            if new_attendees:
+                self.attendees.extend(new_attendees)
+                # Remove duplicates while preserving order
+                self.attendees = list(dict.fromkeys(self.attendees))
+                self.answered_questions.add('attendees')
+    
+    def is_complete(self):
+        """Check if we have all required information"""
+        return bool(
+            self.purpose and 
+            (self.meeting_duration or self.meeting_duration == 30) and  # Allow default duration
+            (self.preferred_time or self.selected_slot) and 
+            self.attendees
+        )
+    
+    def get_missing_info(self):
+        """Get list of missing information that hasn't been asked about yet"""
+        missing = []
+        if not self.purpose and 'purpose' not in self.answered_questions:
+            missing.append('purpose')
+        if not self.meeting_duration and 'duration' not in self.answered_questions:
+            missing.append('duration')
+        if not self.preferred_time and not self.selected_slot and 'time' not in self.answered_questions:
+            missing.append('time')
+        if not self.attendees and 'attendees' not in self.answered_questions:
+            missing.append('attendees')
+        return missing
+    
+    def get_next_question(self):
+        """Get the next question to ask based on missing info and what hasn't been asked"""
+        # Priority order for questions
+        question_order = ['purpose', 'attendees', 'duration', 'time']
+        
+        for question in question_order:
+            if question not in self.answered_questions:
+                if (question == 'purpose' and not self.purpose) or \
+                   (question == 'duration' and not self.meeting_duration) or \
+                   (question == 'time' and not self.preferred_time and not self.selected_slot) or \
+                   (question == 'attendees' and not self.attendees):
+                    return question
+        return None
+
+    def to_dict(self):
+        """Convert state to JSON-serializable dictionary"""
+        return {
+            'meeting_duration': self.meeting_duration,
+            'preferred_time': self.preferred_time,
+            'attendees': self.attendees,
+            'purpose': self.purpose,
+            'available_slots': [slot.isoformat() if slot else None for slot in self.available_slots],
+            'current_step': self.current_step,
+            'last_question_asked': self.last_question_asked,
+            'slots_shown': self.slots_shown,
+            'selected_slot': self.selected_slot.isoformat() if self.selected_slot else None,
+            'meeting_confirmed': self.meeting_confirmed,
+            'answered_questions': list(self.answered_questions)  # Convert set to list
+        }
 
 conversation_states = {}
 
@@ -289,29 +373,146 @@ def oauth2callback():
 @app.route('/chat', methods=['POST'])
 @login_required
 def chat():
-    data = request.json
-    user_message = data.get('message', '')
-    session_id = session.get('session_id')
-    
-    if not session_id or session_id not in conversation_states:
-        return jsonify({'error': 'Invalid session'}), 400
-    
-    state = conversation_states[session_id]
-    
-    # Process the message and update state
-    # This is where you'd integrate with your AI model
-    response = "Message received: " + user_message
-    
-    return jsonify({
-        'response': response,
-        'state': {
-            'meeting_duration': state.meeting_duration,
-            'preferred_time': state.preferred_time,
-            'attendees': state.attendees,
-            'purpose': state.purpose,
-            'available_slots': state.available_slots
-        }
-    })
+    try:
+        data = request.get_json()
+        message = data.get('message', '')
+
+        # Initialize conversation state if not exists
+        if 'conversation_state' not in session:
+            session['conversation_state'] = ConversationState().to_dict()
+        
+        state = ConversationState()
+        state.__dict__.update(session['conversation_state'])
+        
+        # Handle initial chat message
+        if message == "START_CHAT":
+            response = "━━━ Welcome! ━━━\n\n👋 Hello! I'm your AI scheduling assistant.\n\nI'll help you schedule your meeting. Let's get started!\n\nWhat's the purpose of your meeting?"
+            state.last_question_asked = 'purpose'
+            session['conversation_state'] = state.to_dict()
+            return jsonify({
+                'response': response,
+                'state': {
+                    'has_purpose': False,
+                    'has_duration': False,
+                    'has_time': False,
+                    'slots_shown': False
+                }
+            })
+
+        # Handle reset command
+        if message.lower() in ['reset', 'start over', 'restart']:
+            state.reset()
+            return jsonify({
+                'response': prompts.format_initial_greeting(),
+                'state': state.to_dict()
+            })
+        
+        # Handle slot selection if we're showing slots
+        if state.slots_shown and state.available_slots:
+            try:
+                # Check if user message is a slot number
+                if message.isdigit() and 1 <= int(message) <= len(state.available_slots):
+                    slot_idx = int(message) - 1
+                    state.selected_slot = state.available_slots[slot_idx]
+                    state.current_step = 'confirming'
+                    
+                    # Format confirmation message
+                    slot_time = state.selected_slot.strftime("%A, %B %d at %I:%M %p")
+                    return jsonify({
+                        'response': prompts.format_confirmation(state, slot_time),
+                        'state': state.to_dict()
+                    })
+            except (ValueError, IndexError):
+                pass
+        
+        # Handle confirmation if we're in confirming state
+        if state.current_step == 'confirming':
+            if message.lower() in ['yes', 'sure', 'okay', 'ok', 'y']:
+                # Schedule the meeting
+                creds = get_calendar_credentials()
+                if creds:
+                    success, result = create_calendar_event(
+                        creds,
+                        summary=state.purpose,
+                        start_time=state.selected_slot,
+                        attendees=state.attendees,
+                        duration_minutes=state.meeting_duration or 30
+                    )
+                    
+                    if success:
+                        response = prompts.format_success_message(result)
+                        # Only reset state after successful scheduling
+                        state.reset()
+                        return jsonify({
+                            'response': response,
+                            'state': state.to_dict()
+                        })
+            elif message.lower() in ['no', 'nope', 'n']:
+                state.current_step = 'showing_slots'
+                return jsonify({
+                    'response': prompts.format_available_slots(state.available_slots),
+                    'state': state.to_dict()
+                })
+        
+        # Get AI response and update state
+        response_data = prompts.get_ai_response(message, state)
+        if isinstance(response_data, dict):
+            # Update state with any new information
+            state.update_from_response(response_data)
+            response = response_data.get('response', '')
+        else:
+            response = response_data
+        
+        # If we have all info or AI suggests checking calendar
+        if (state.is_complete() and not state.slots_shown) or \
+           (state.current_step == 'gathering_info' and prompts.should_check_calendar(response)):
+            # Get calendar credentials
+            creds = get_calendar_credentials()
+            if creds:
+                # Get available slots from calendar
+                available_slots = calendar_utils.find_available_slots(
+                    creds,
+                    start_time=state.preferred_time['start'] if state.preferred_time else None,
+                    duration_minutes=state.meeting_duration or 30,
+                    attendees=state.attendees
+                )
+                state.available_slots = available_slots
+                state.slots_shown = True
+                state.current_step = 'showing_slots'
+                response = prompts.format_available_slots(available_slots)
+                return jsonify({
+                    'response': response,
+                    'state': state.to_dict()
+                })
+        
+        # Get next question if we're still gathering info
+        if state.current_step in ['initial', 'gathering_info']:
+            next_question = state.get_next_question()
+            if next_question:
+                state.current_step = 'gathering_info'
+                state.last_question_asked = next_question
+                response = prompts.format_info_request(next_question)
+                
+                # Add current meeting details if we have any
+                details = prompts.format_meeting_details(state)
+                if details:
+                    response += "\n" + details
+                
+                # Add remaining questions
+                missing = state.get_missing_info()
+                if len(missing) > 1:  # Don't show if only the current question is missing
+                    response += prompts.format_missing_info(missing[1:])  # Skip the current question
+        
+        return jsonify({
+            'response': response,
+            'state': state.to_dict()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in chat endpoint: {str(e)}")
+        return jsonify({
+            'error': f'Failed to process chat: {str(e)}'
+        }), 500
 
 @app.route('/process_speech', methods=['POST'])
 def process_speech():

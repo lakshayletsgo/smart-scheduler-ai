@@ -1,0 +1,6 @@
+[server]
+port = 5000
+baseUrlPath = ""
+
+[browser]
+serverAddress = "127.0.0.1" 

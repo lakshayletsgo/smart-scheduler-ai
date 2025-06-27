@@ -23,14 +23,18 @@
             margin-bottom: 1rem;
             padding: 0.5rem 1rem;
             border-radius: 4px;
+            max-width: 80%;
+            word-wrap: break-word;
         }
         .user-message {
             background-color: #e3f2fd;
-            margin-left: 2rem;
+            margin-left: auto;
+            margin-right: 0;
         }
         .bot-message {
             background-color: #f5f5f5;
-            margin-right: 2rem;
+            margin-left: 0;
+            margin-right: auto;
         }
         .time-slots {
             margin-top: 1rem;
@@ -83,7 +87,24 @@
         
         function startTextChat() {
             document.getElementById('chatInterface').style.display = 'block';
-            addBotMessage("Hello! I'm your AI scheduling assistant. How can I help you schedule your appointment today?");
+            fetch('/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ message: "START_CHAT" })
+            })
+            .then(response => response.json())
+            .then(data => {
+                addBotMessage(data.response);
+                if (data.state) {
+                    updateProgress(data.state);
+                }
+            })
+            .catch(error => {
+                console.error('Error starting chat:', error);
+                addBotMessage('Sorry, there was an error starting the chat. Please try again.');
+            });
         }
         
         function updateProgress(state) {
@@ -100,7 +121,7 @@
             const chatBox = document.getElementById('chatBox');
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
-            messageDiv.textContent = message;
+            messageDiv.innerHTML = message;
             chatBox.appendChild(messageDiv);
             chatBox.scrollTop = chatBox.scrollHeight;
         }

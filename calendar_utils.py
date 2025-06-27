@@ -142,10 +142,11 @@ def build_calendar_service(credentials):
         logger.error(f"Error building calendar service: {str(e)}")
         raise
 
-def find_available_slots(credentials, duration_minutes, preferred_time_range):
+def find_available_slots(credentials, start_time=None, duration_minutes=30, attendees=None):
     try:
         logger.debug(f"Finding available slots with duration: {duration_minutes} minutes")
-        logger.debug(f"Preferred time range: {preferred_time_range}")
+        logger.debug(f"Start time: {start_time}")
+        logger.debug(f"Attendees: {attendees}")
         
         service = build_calendar_service(credentials)
         
@@ -154,35 +155,44 @@ def find_available_slots(credentials, duration_minutes, preferred_time_range):
         local_tz = pytz.timezone(timezone)
         logger.debug(f"Using timezone: {timezone}")
         
-        if not preferred_time_range:
+        if not start_time:
             now = datetime.now(local_tz)
             start_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
             end_time = (now + timedelta(days=7)).replace(hour=17, minute=0, second=0, microsecond=0)
         else:
-            start_time = preferred_time_range['start'].astimezone(local_tz)
-            end_time = preferred_time_range['end'].astimezone(local_tz)
+            start_time = start_time.astimezone(local_tz)
+            end_time = (start_time + timedelta(days=7)).replace(hour=17, minute=0, second=0, microsecond=0)
         
         logger.debug(f"Search period: {start_time} to {end_time}")
+        
+        # Build the query for free/busy info
+        query_items = [{"id": "primary"}]
+        if attendees:
+            for email in attendees:
+                query_items.append({"id": email})
         
         body = {
             "timeMin": start_time.isoformat(),
             "timeMax": end_time.isoformat(),
-            "items": [{"id": "primary"}]
+            "items": query_items
         }
         
         logger.debug("Querying calendar API for busy periods")
         events_result = service.freebusy().query(body=body).execute()
         logger.debug(f"Calendar API response: {events_result}")
         
-        calendars = events_result.get('calendars', {})
-        busy_periods = calendars.get('primary', {}).get('busy', [])
-        logger.debug(f"Found {len(busy_periods)} busy periods")
+        # Combine busy periods from all calendars
+        busy_periods = []
+        for calendar_id, calendar_info in events_result.get('calendars', {}).items():
+            busy_periods.extend(calendar_info.get('busy', []))
+        
+        logger.debug(f"Found {len(busy_periods)} total busy periods")
         
         available_slots = []
         current_time = start_time
         
         while current_time < end_time:
-            if 9 <= current_time.hour < 17:
+            if 9 <= current_time.hour < 17:  # Only check during business hours
                 slot_end = current_time + timedelta(minutes=duration_minutes)
                 is_free = True
                 
@@ -268,3 +278,82 @@ def schedule_meeting(credentials, start_time, duration, attendees, purpose):
         error_message = f"Error scheduling meeting: {str(e)}"
         logger.error(error_message, exc_info=True)
         return False, error_message
+
+def create_calendar_event(credentials, summary, start_time, attendees, duration_minutes=30):
+    """Create a calendar event and send invites to attendees.
+    
+    Args:
+        credentials: Google Calendar credentials
+        summary: Event title/summary
+        start_time: Start time as datetime object
+        attendees: List of attendee email addresses
+        duration_minutes: Duration of meeting in minutes (default 30)
+    
+    Returns:
+        Created event object or None if there was an error
+    """
+    try:
+        service = build_calendar_service(credentials)
+        
+        # Get calendar timezone
+        calendar_list = service.calendarList().get(calendarId='primary').execute()
+        timezone = calendar_list.get('timeZone', 'UTC')
+        
+        # Convert start_time to calendar timezone if needed
+        if start_time.tzinfo is None:
+            local_tz = pytz.timezone(timezone)
+            start_time = local_tz.localize(start_time)
+        
+        end_time = start_time + timedelta(minutes=duration_minutes)
+        
+        # Format attendees
+        attendee_list = [{'email': email} for email in attendees]
+        
+        event = {
+            'summary': summary,
+            'start': {
+                'dateTime': start_time.isoformat(),
+                'timeZone': timezone,
+            },
+            'end': {
+                'dateTime': end_time.isoformat(),
+                'timeZone': timezone,
+            },
+            'attendees': attendee_list,
+            'reminders': {
+                'useDefault': True
+            }
+        }
+        
+        # Check if the time slot is available
+        query_items = [{"id": "primary"}]
+        for email in attendees:
+            query_items.append({"id": email})
+            
+        busy_result = service.freebusy().query(
+            body={
+                "timeMin": start_time.isoformat(),
+                "timeMax": end_time.isoformat(),
+                "items": query_items
+            }
+        ).execute()
+        
+        # Check if anyone is busy
+        for calendar_id, calendar_info in busy_result.get('calendars', {}).items():
+            if calendar_info.get('busy', []):
+                logger.warning(f"Time slot is busy for {calendar_id}")
+                return None
+        
+        # Create the event
+        event = service.events().insert(
+            calendarId='primary',
+            body=event,
+            sendUpdates='all'  # Send email notifications to attendees
+        ).execute()
+        
+        logger.debug(f"Event created: {event.get('htmlLink')}")
+        return event
+        
+    except Exception as e:
+        logger.error(f"Error creating calendar event: {str(e)}")
+        return None
