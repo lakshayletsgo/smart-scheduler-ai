@@ -55,7 +55,7 @@ except Exception as e:
 # Initialize Google Cloud AI Platform if project ID is available
 if os.getenv('GOOGLE_CLOUD_PROJECT'):
     try:
-aiplatform.init(project=os.getenv('GOOGLE_CLOUD_PROJECT'))
+        aiplatform.init(project=os.getenv('GOOGLE_CLOUD_PROJECT'))
     except Exception as e:
         logger.error(f"Error initializing AI Platform: {str(e)}")
 
@@ -285,7 +285,7 @@ def process_message(message):
     if details.attendees and not state.attendees:
         state.attendees.extend(details.attendees)
         state.attendees = list(dict.fromkeys(state.attendees))  # Remove duplicates
-                state.answered_questions.add('attendees')
+        state.answered_questions.add('attendees')
         attendee_list = "\n".join([f"• {attendee}" for attendee in state.attendees])
         response_parts.append(f"Added attendees:\n{attendee_list}")
         state_updated = True
@@ -325,7 +325,7 @@ def process_message(message):
                     return "Sorry, there was an error creating the calendar event. Please try again."
             else:
                 # Only show available slots if no specific time was requested
-            available_slots = calendar_utils.find_available_slots(
+                available_slots = calendar_utils.find_available_slots(
                 creds,
                 start_time=state.preferred_time['start'] if state.preferred_time else None,
                 duration_minutes=state.meeting_duration or 30,
@@ -334,7 +334,7 @@ def process_message(message):
             state.available_slots = available_slots
             state.slots_shown = True
             state.current_step = 'showing_slots'
-                return prompts.format_available_slots(available_slots).replace("<br>", "\n")
+            return prompts.format_available_slots(available_slots).replace("<br>", "\n")
         else:
             return "Please authorize access to Google Calendar first."
     
@@ -579,24 +579,24 @@ def main():
             st.session_state.initialized = False
     
     # Check if this is an OAuth callback
-    if 'code' in st.query_params:
-        handle_oauth_callback()
-        return
-    
-    # Check for Google Calendar authorization
-    if not st.session_state.credentials:
-        st.warning("Please authorize access to Google Calendar to continue")
-        authorize_google_calendar()
-        return
-    
-    # Add tabs for text and voice interfaces
-    tab1, tab2 = st.tabs(["Text Chat", "Voice Call"])
-    
-    with tab1:
-        show_chat_interface()
-    
-    with tab2:
-        show_voice_interface()
+        if 'code' in st.query_params:
+            handle_oauth_callback()
+            return
+        
+        # Check for Google Calendar authorization
+        if not st.session_state.credentials:
+            st.warning("Please authorize access to Google Calendar to continue")
+            authorize_google_calendar()
+            return
+        
+        # Add tabs for text and voice interfaces
+        tab1, tab2 = st.tabs(["Text Chat", "Voice Call"])
+        
+        with tab1:
+            show_chat_interface()
+        
+        with tab2:
+            show_voice_interface()
             
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
