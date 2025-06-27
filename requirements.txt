@@ -1,14 +1,16 @@
-streamlit==1.46.0
-google-generativeai==0.3.2
-google-auth==2.27.0
-google-auth-oauthlib==1.2.0
+streamlit==1.28.0
+google-cloud-aiplatform==1.35.0
+google-auth-oauthlib==1.1.0
+google-auth==2.23.0
 google-auth-httplib2==0.2.0
-google-api-python-client==2.116.0
+google-api-python-client==2.108.0
 google-api-core==2.15.0
-google-cloud-aiplatform==1.36.4
 python-dateutil==2.8.2
-python-dotenv==1.0.1
-dateparser==1.2.0
-pytz==2024.1
+python-dotenv==1.0.0
+spacy==3.7.2
+dateparser==1.1.8
+pytz==2023.3
 requests==2.31.0
-bland>=0.3.0 
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
+pathlib>=1.0.1
+logging>=0.5.1.2 
