@@ -398,7 +398,7 @@ def chat():
                     'slots_shown': False
                 }
             })
-
+        
         # Handle reset command
         if message.lower() in ['reset', 'start over', 'restart']:
             state.reset()
