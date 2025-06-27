@@ -19,6 +19,7 @@ from voice_bot import VoiceBot
 import asyncio
 from spacy.matcher import Matcher
 import sys
+import en_core_web_sm
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -68,28 +69,14 @@ class ConversationState:
 def load_nlp():
     try:
         # Try to load the model directly
-        return spacy.load('en_core_web_sm')
-    except OSError:
-        try:
-            # If loading fails, try downloading and loading
-            st.warning("Downloading language model... This may take a moment.")
-            import subprocess
-            # Use spacy.cli.download instead of subprocess
-            import spacy.cli
-            spacy.cli.download('en_core_web_sm')
-            return spacy.load('en_core_web_sm')
-        except Exception as e:
-            # If both attempts fail, use blank model as fallback
-            st.error(f"Could not load or download language model. Using blank model as fallback. Error: {str(e)}")
-            logger.error(f"Error loading/downloading language model: {str(e)}", exc_info=True)
-            return spacy.blank('en')
+        return en_core_web_sm.load()
+    except Exception as e:
+        logger.error(f"Error loading language model: {str(e)}", exc_info=True)
+        st.warning("Using basic language processing due to model loading issues.")
+        return spacy.blank('en')
 
-try:
-    nlp = load_nlp()
-except Exception as e:
-    st.error(f"Error loading language model: {str(e)}")
-    logger.error(f"Error loading language model: {str(e)}", exc_info=True)
-    nlp = spacy.blank('en')  # Fallback to blank model
+# Initialize NLP
+nlp = load_nlp()
 
 # Initialize Google Cloud AI Platform if project ID is available
 if os.getenv('GOOGLE_CLOUD_PROJECT'):
