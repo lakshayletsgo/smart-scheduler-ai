@@ -12,7 +12,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 import re
 from dateutil import parser
-import spacy
 import json
 import logging
 from voice_bot import VoiceBot
@@ -64,44 +63,65 @@ class ConversationState:
             'last_question_asked': self.last_question_asked
         }
 
-# Load spaCy model with error handling
-@st.cache_resource(show_spinner=True)
-def load_nlp():
+class MeetingDetails:
+    def __init__(self):
+        self.date = None
+        self.time = None
+        self.duration = None
+        self.purpose = None
+        self.attendees = []
+
+    def to_dict(self):
+        return {
+            'date': self.date,
+            'time': self.time,
+            'duration': self.duration,
+            'purpose': self.purpose,
+            'attendees': self.attendees
+        }
+
+def extract_meeting_details(text):
+    """Extract meeting details using regex patterns"""
+    details = MeetingDetails()
+    
+    # Extract duration using regex
+    duration_match = re.search(r'(\d+)\s*(hour|hr|min|minutes?)', text.lower())
+    if duration_match:
+        amount = int(duration_match.group(1))
+        unit = duration_match.group(2)
+        if unit.startswith('hour') or unit == 'hr':
+            details.duration = amount * 60
+        else:
+            details.duration = amount
+
+    # Extract date/time using dateparser
     try:
-        # Try to load the model directly
-        return en_core_web_sm.load()
-    except Exception as e:
-        logger.error(f"Error loading language model: {str(e)}", exc_info=True)
-        st.warning("Using basic language processing due to model loading issues.")
-        return spacy.blank('en')
+        parsed_date = parser.parse(text, settings={'PREFER_DATES_FROM': 'future'})
+        if parsed_date:
+            details.date = parsed_date.strftime('%Y-%m-%d')
+            details.time = parsed_date.strftime('%H:%M')
+    except:
+        pass
 
-# Initialize NLP
-nlp = load_nlp()
+    # Extract purpose (simple heuristic - take the first sentence that doesn't contain time/date)
+    sentences = re.split(r'[.!?]+', text)
+    for sentence in sentences:
+        # Skip sentences with time/date indicators
+        if not re.search(r'\b(today|tomorrow|next|at|on|pm|am|:\d{2}|\d{1,2}(?::\d{2})?)\b', sentence.lower()):
+            purpose = sentence.strip()
+            if purpose:
+                details.purpose = purpose
+                break
 
-# Initialize Google Cloud AI Platform if project ID is available
-if os.getenv('GOOGLE_CLOUD_PROJECT'):
-    try:
-        aiplatform.init(project=os.getenv('GOOGLE_CLOUD_PROJECT'))
-    except Exception as e:
-        logger.error(f"Error initializing AI Platform: {str(e)}")
-
-# Google OAuth2 Configuration
-CLIENT_SECRETS_FILE = os.path.join(os.path.dirname(__file__), 'client_secrets.json')
-SCOPES = ['https://www.googleapis.com/auth/calendar.readonly',
-          'https://www.googleapis.com/auth/calendar.events']
-
-# Get the deployment URL from Streamlit's environment or use localhost as fallback
-def get_oauth_redirect_uri():
-    if os.getenv('STREAMLIT_SERVER_URL'):
-        base_url = os.getenv('STREAMLIT_SERVER_URL')
-    else:
-        base_url = 'http://localhost:8501'
-    return f"{base_url}/oauth2callback"
+    # Extract email addresses
+    details.attendees = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', text)
+    
+    return details
 
 # Initialize session state
 if 'conversation_state' not in st.session_state:
     st.session_state.conversation_state = ConversationState()
-    st.session_state.initialized = False  # Add flag to track initialization
+    st.session_state.initialized = False
 if 'credentials' not in st.session_state:
     st.session_state.credentials = None
 if 'messages' not in st.session_state:
@@ -443,154 +463,6 @@ async def end_voice_call():
             st.success("Call ended")
     except Exception as e:
         st.error(f"Error ending call: {str(e)}")
-
-class MeetingDetails:
-    def __init__(self):
-        self.purpose = None
-        self.date = None
-        self.time = None
-        self.attendees = []
-        self.complete = False
-
-    def to_dict(self):
-        return {
-            'purpose': self.purpose,
-            'date': self.date,
-            'time': self.time,
-            'attendees': self.attendees,
-            'complete': self.complete
-        }
-
-def extract_meeting_details(text):
-    doc = nlp(text)
-    details = MeetingDetails()
-    logger.debug(f"Extracting details from text: {text}")
-
-    # First, extract date and time using spaCy's entity recognition and patterns
-    time_patterns = [
-        r'(next\s+week)?\s*(monday|tuesday|wednesday|thursday|friday|saturday|sunday)',
-        r'(next\s+week)?\s*(morning|afternoon|evening)',
-        r'at\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?',
-        r'around\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?',
-        r'\d{1,2}(?::\d{2})?\s*(?:am|pm)',
-    ]
-
-    # Check for time patterns first
-    for pattern in time_patterns:
-        time_match = re.search(pattern, text.lower())
-        if time_match:
-            time_text = time_match.group(0)
-            logger.debug(f"Found time pattern match: '{time_text}'")
-            try:
-                base_time = datetime.now()
-                logger.debug(f"Initial base_time: {base_time}")
-
-                # Handle relative day expressions
-                is_next_week = 'next week' in text.lower()  # Check full text for next week
-                logger.debug(f"Is next week mentioned: {is_next_week}")
-                
-                if is_next_week:
-                    base_time += timedelta(days=7)
-                    logger.debug(f"Added 7 days for next week. New base_time: {base_time}")
-                elif 'tomorrow' in time_text:
-                    base_time += timedelta(days=1)
-                    logger.debug(f"Added 1 day for tomorrow. New base_time: {base_time}")
-
-                # Handle weekday names
-                weekdays = {
-                    'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
-                    'friday': 4, 'saturday': 5, 'sunday': 6
-                }
-                for day, day_num in weekdays.items():
-                    if day in time_text:
-                        logger.debug(f"Found weekday: {day} (day_num: {day_num})")
-                        current_weekday = base_time.weekday()
-                        logger.debug(f"Current weekday: {current_weekday}")
-                        days_ahead = day_num - current_weekday
-                        if days_ahead <= 0:  # If the day has passed this week
-                            days_ahead += 7  # Move to next week
-                        logger.debug(f"Days ahead before next week check: {days_ahead}")
-                        if is_next_week:
-                            days_ahead += 7  # Add another week
-                            logger.debug(f"Added 7 more days for next week. Days ahead: {days_ahead}")
-                        base_time += timedelta(days=days_ahead)
-                        logger.debug(f"Final base_time after weekday adjustment: {base_time}")
-                        break
-
-                # Handle time of day
-                if 'morning' in time_text:
-                    parsed_time = base_time.replace(hour=9, minute=0, second=0, microsecond=0)
-                elif 'afternoon' in time_text:
-                    parsed_time = base_time.replace(hour=14, minute=0, second=0, microsecond=0)
-                elif 'evening' in time_text:
-                    parsed_time = base_time.replace(hour=17, minute=0, second=0, microsecond=0)
-                else:
-                    # Try to parse specific time
-                    time_only_match = re.search(r'\d{1,2}(?::\d{2})?\s*(?:am|pm)?', time_text)
-                    if time_only_match:
-                        time_str = time_only_match.group(0)
-                        try:
-                            parsed_time_obj = parser.parse(time_str)
-                            parsed_time = base_time.replace(
-                                hour=parsed_time_obj.hour,
-                                minute=parsed_time_obj.minute,
-                                second=0,
-                                microsecond=0
-                            )
-                        except Exception as e:
-                            logger.error(f"Error parsing specific time '{time_str}': {str(e)}")
-                            parsed_time = base_time
-                    else:
-                        parsed_time = base_time
-
-                details.date = parsed_time.strftime('%Y-%m-%d')
-                details.time = parsed_time.strftime('%H:%M')
-                logger.debug(f"Final extracted date/time: {details.date} {details.time} from '{time_text}'")
-                
-                # Remove the time expression from text for purpose extraction
-                text = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
-            except Exception as e:
-                logger.error(f"Error parsing time '{time_text}': {str(e)}")
-                pass
-
-    # Extract email addresses for attendees
-    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-    details.attendees = re.findall(email_pattern, text)
-    
-    # Remove email addresses from text for purpose extraction
-    for email in details.attendees:
-        text = text.replace(email, '').strip()
-    
-    # Clean up text for purpose extraction by removing common scheduling phrases
-    scheduling_phrases = [
-        r'i want to schedule',
-        r'please schedule',
-        r'schedule a',
-        r'set up a',
-        r'book a',
-        r'arrange a',
-        r'plan a',
-        r'for',
-        r'at',
-        r'on',
-        r'call',
-        r'meeting'
-    ]
-    
-    purpose_text = text.lower()
-    for phrase in scheduling_phrases:
-        purpose_text = re.sub(phrase, '', purpose_text, flags=re.IGNORECASE)
-    
-    # Clean up the remaining text
-    purpose_text = ' '.join(purpose_text.split())
-    
-    if purpose_text and not any(word in purpose_text.lower() for word in ['tomorrow', 'today', 'next', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']):
-        details.purpose = purpose_text.strip().capitalize()
-    
-    # Set the complete flag based on having all required information
-    details.complete = bool(details.purpose and details.date and details.time and details.attendees)
-    logger.debug(f"Extracted details: {details.to_dict()}")
-    return details
 
 def main():
     try:
