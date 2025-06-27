@@ -18,6 +18,7 @@ import logging
 from voice_bot import VoiceBot
 import asyncio
 from spacy.matcher import Matcher
+import sys
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -66,12 +67,20 @@ class ConversationState:
 @st.cache_resource(show_spinner=True)
 def load_nlp():
     try:
+        # Try to load the model directly
         return spacy.load('en_core_web_sm')
     except OSError:
-        st.warning("Loading language model...")
-        import subprocess
-        subprocess.run(['python', '-m', 'spacy', 'download', 'en_core_web_sm'])
-        return spacy.load('en_core_web_sm')
+        try:
+            # If loading fails, try downloading and loading
+            st.warning("Downloading language model... This may take a moment.")
+            import subprocess
+            subprocess.check_call([sys.executable, "-m", "spacy", "download", "en_core_web_sm"])
+            return spacy.load('en_core_web_sm')
+        except Exception as e:
+            # If both attempts fail, use blank model as fallback
+            st.error(f"Could not load or download language model. Using blank model as fallback. Error: {str(e)}")
+            logger.error(f"Error loading/downloading language model: {str(e)}", exc_info=True)
+            return spacy.blank('en')
 
 try:
     nlp = load_nlp()
