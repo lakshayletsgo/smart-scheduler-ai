@@ -1,4 +1,3 @@
-import spacy
 import re
 from datetime import datetime
 from dateutil import parser
@@ -7,14 +6,6 @@ import logging
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
-# Load spaCy model
-try:
-    nlp = spacy.load('en_core_web_sm')
-except OSError:
-    import subprocess
-    subprocess.run(['python', '-m', 'spacy', 'download', 'en_core_web_sm'])
-    nlp = spacy.load('en_core_web_sm')
 
 class MeetingDetails:
     def __init__(self):
@@ -37,59 +28,19 @@ class MeetingDetails:
         return f"MeetingDetails(purpose={self.purpose}, date={self.date}, time={self.time}, duration={self.duration}, attendees={self.attendees})"
 
 def extract_datetime(text):
-    """Extract date and time using spaCy and dateparser."""
-    doc = nlp(text)
-    
-    # Collect all date/time related entities
-    datetime_texts = []
-    for ent in doc.ents:
-        if ent.label_ in ['DATE', 'TIME']:
-            datetime_texts.append(ent.text)
-    
-    # Also look for time patterns that spaCy might miss
-    time_patterns = [
-        r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b',
-        r'\b(?:at|from)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b',
-        r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:today|tomorrow|next|this)\b'
-    ]
-    
-    for pattern in time_patterns:
-        matches = re.finditer(pattern, text, re.I)
-        for match in matches:
-            if match.group() not in datetime_texts:
-                datetime_texts.append(match.group())
-    
-    # Try to parse the combined date/time text
-    if datetime_texts:
-        try:
-            parsed_date = parser.parse(
-                ' '.join(datetime_texts),
-                settings={
-                    'PREFER_DATES_FROM': 'future',
-                    'RELATIVE_BASE': datetime.now(),
-                    'PREFER_DAY_OF_MONTH': 'first'
-                }
-            )
-            if parsed_date > datetime.now():
-                return parsed_date
-        except Exception as e:
-            logger.error(f"Error parsing datetime from entities: {e}")
-    
-    # Try parsing the full text as fallback
+    """Extract date and time using dateparser."""
     try:
         parsed_date = parser.parse(
             text,
             settings={
                 'PREFER_DATES_FROM': 'future',
-                'RELATIVE_BASE': datetime.now(),
-                'PREFER_DAY_OF_MONTH': 'first'
+                'RELATIVE_BASE': datetime.now()
             }
         )
-        if parsed_date > datetime.now():
+        if parsed_date and parsed_date > datetime.now():
             return parsed_date
     except Exception as e:
-        logger.error(f"Error parsing datetime from full text: {e}")
-    
+        logger.error(f"Error parsing date/time: {e}")
     return None
 
 def extract_duration(text):
@@ -113,24 +64,13 @@ def extract_duration(text):
     return None
 
 def extract_purpose(text):
-    """Extract meeting purpose using spaCy and patterns."""
-    doc = nlp(text)
-    
-    # Try verb-based patterns first
-    purpose_verbs = ['discuss', 'talk', 'review', 'plan', 'meet', 'schedule']
-    for token in doc:
-        if token.lemma_.lower() in purpose_verbs:
-            for child in token.children:
-                if child.dep_ in ['dobj', 'pobj', 'attr']:
-                    purpose = ' '.join(t.text for t in child.subtree)
-                    if len(purpose) > 3:
-                        return purpose.strip()
-    
-    # Try regex patterns
+    """Extract meeting purpose using regex patterns."""
+    # Try regex patterns first
     purpose_patterns = [
         r'(?:meeting|call|discussion) (?:about|for|to|regarding) (.*?)(?=(?:with|at|on|by|\.|$))',
         r'(?:discuss|talk about|review) (.*?)(?=(?:with|at|on|by|\.|$))',
-        r'purpose is (.*?)(?=(?:with|at|on|by|\.|$))'
+        r'(?:purpose is|to discuss|regarding|about) (.*?)(?=(?:with|at|on|by|\.|$))',
+        r'(?:schedule|set up|arrange|plan|organize|book).*?(?:meeting|call|session)\s+(?:for|about|to discuss|regarding)\s+(.*?)(?=\s+(?:with|at|on|by|\.|\?|$))'
     ]
     
     for pattern in purpose_patterns:
@@ -140,10 +80,12 @@ def extract_purpose(text):
             if len(purpose) > 3:
                 return purpose
     
-    # Try first sentence that doesn't contain date/time entities
-    for sent in doc.sents:
-        if not any(ent.label_ in ['DATE', 'TIME'] for ent in sent.ents):
-            purpose = sent.text.strip()
+    # If no purpose found, try first sentence that doesn't contain date/time
+    sentences = re.split(r'[.!?]+', text)
+    for sentence in sentences:
+        # Skip if sentence contains time/date indicators
+        if not re.search(r'\b(?:today|tomorrow|next|at|on|pm|am|:\d{2}|\d{1,2}(?::\d{2})?|@)\b', sentence.lower()):
+            purpose = sentence.strip()
             if len(purpose) > 3:
                 return purpose
     
@@ -155,7 +97,7 @@ def extract_attendees(text):
     return re.findall(email_pattern, text)
 
 def extract_meeting_details(text):
-    """Extract all meeting details using improved entity recognition."""
+    """Extract all meeting details using regex patterns."""
     details = MeetingDetails()
     logger.debug(f"Processing text: {text}")
     

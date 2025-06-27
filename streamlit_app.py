@@ -17,8 +17,6 @@ import logging
 from voice_bot import VoiceBot
 import asyncio
 import sys
-import spacy
-from spacy.matcher import Matcher
 from entity_extractor import extract_meeting_details, MeetingDetails
 
 # Set up logging
