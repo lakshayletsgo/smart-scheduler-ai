@@ -68,6 +68,15 @@ class ConversationState:
     def reset(self):
         self.__init__()
 
+    def is_complete(self):
+        """Check if all required information has been gathered."""
+        return (
+            self.purpose is not None
+            and self.meeting_duration is not None
+            and self.preferred_time is not None
+            and len(self.attendees) > 0
+        )
+
     def to_dict(self):
         return {
             'purpose': self.purpose,
