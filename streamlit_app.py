@@ -34,6 +34,34 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+class ConversationState:
+    def __init__(self):
+        self.purpose = None
+        self.meeting_duration = 30  # Default duration in minutes
+        self.preferred_time = None
+        self.attendees = set()
+        self.answered_questions = set()
+        self.current_step = 'initial'
+        self.slots_shown = False
+        self.available_slots = []
+        self.last_question_asked = None
+
+    def reset(self):
+        self.__init__()
+
+    def to_dict(self):
+        return {
+            'purpose': self.purpose,
+            'meeting_duration': self.meeting_duration,
+            'preferred_time': self.preferred_time,
+            'attendees': list(self.attendees),
+            'answered_questions': list(self.answered_questions),
+            'current_step': self.current_step,
+            'slots_shown': self.slots_shown,
+            'available_slots': self.available_slots,
+            'last_question_asked': self.last_question_asked
+        }
+
 # Load spaCy model with error handling
 @st.cache_resource(show_spinner=True)
 def load_nlp():
