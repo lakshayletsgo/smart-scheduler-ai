@@ -27,12 +27,24 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Load spaCy model
-try:
-    nlp = spacy.load('en_core_web_sm')
-except OSError:
-    import subprocess
-    subprocess.run(['python', '-m', 'spacy', 'download', 'en_core_web_sm'])
-    nlp = spacy.load('en_core_web_sm')
+@st.cache_resource
+def load_spacy_model():
+    try:
+        return spacy.load('en_core_web_sm')
+    except OSError:
+        # If loading fails, try downloading the model
+        try:
+            import subprocess
+            subprocess.run(['python', '-m', 'spacy', 'download', 'en_core_web_sm'], check=True)
+            return spacy.load('en_core_web_sm')
+        except Exception as e:
+            st.error(f"Failed to load spaCy model: {str(e)}")
+            logger.error(f"Error loading spaCy model: {str(e)}")
+            # Return a blank English model as fallback
+            return spacy.blank('en')
+
+# Initialize the model
+nlp = load_spacy_model()
 
 class ConversationState:
     def __init__(self):
