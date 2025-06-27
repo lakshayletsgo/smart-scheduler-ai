@@ -111,60 +111,6 @@ class ConversationState:
             'last_question_asked': self.last_question_asked
         }
 
-
-
-
-    
-    # Extract purpose using dependency parsing
-    purpose_verbs = ['discuss', 'talk', 'review', 'plan', 'meet', 'schedule']
-    purpose_found = False
-    
-    # First try to find purpose using verb patterns
-    for token in doc:
-        if token.lemma_.lower() in purpose_verbs:
-            for child in token.children:
-                if child.dep_ in ['dobj', 'pobj', 'attr']:
-                    purpose = ' '.join(t.text for t in child.subtree)
-                    if len(purpose) > 3:
-                        details.purpose = purpose.strip()
-                        purpose_found = True
-                        logger.debug(f"Extracted purpose from verb pattern: {purpose}")
-                        break
-        if purpose_found:
-            break
-    
-    # If no purpose found, try regex patterns
-    if not purpose_found:
-        purpose_patterns = [
-            r'(?:meeting|call|discussion) (?:about|for|to|regarding) (.*?)(?=(?:with|at|on|by|\.|$))',
-            r'(?:discuss|talk about|review) (.*?)(?=(?:with|at|on|by|\.|$))',
-            r'purpose is (.*?)(?=(?:with|at|on|by|\.|$))'
-        ]
-        
-        for pattern in purpose_patterns:
-            match = re.search(pattern, text, re.I)
-            if match:
-                purpose = match.group(1).strip()
-                if len(purpose) > 3:
-                    details.purpose = purpose
-                    logger.debug(f"Extracted purpose from regex: {purpose}")
-                    break
-    
-    # If still no purpose found, try first sentence without time/date/email
-    if not details.purpose:
-        for sent in doc.sents:
-            # Skip if sentence contains time/date/email indicators
-            if not any(ent.label_ in ['DATE', 'TIME'] for ent in sent.ents) and \
-               not re.search(r'\b(?:@|am|pm)\b', sent.text.lower()):
-                purpose = sent.text.strip()
-                if len(purpose) > 3:
-                    details.purpose = purpose
-                    logger.debug(f"Extracted purpose from first sentence: {purpose}")
-                    break
-    
-    logger.debug(f"Final extracted details: {details}")
-    return details
-
 # Initialize session state
 if 'conversation_state' not in st.session_state:
     st.session_state.conversation_state = ConversationState()
