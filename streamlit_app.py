@@ -17,7 +17,6 @@ import logging
 from voice_bot import VoiceBot
 import asyncio
 import sys
-import en_core_web_sm
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
