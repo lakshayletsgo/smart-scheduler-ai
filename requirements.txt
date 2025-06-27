@@ -8,20 +8,12 @@ google-api-core==2.15.0
 google-cloud-aiplatform==1.36.4
 python-dateutil==2.8.2
 python-dotenv==1.0.1
-# Use spaCy's small model without neural networks for better compatibility
 spacy==3.7.2
-en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.0/en_core_web_sm-3.7.0-py3-none-any.whl
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1.tar.gz
 dateparser==1.2.0
 pytz==2024.1
 requests==2.31.0
 openai==1.3.7
 langchain==0.0.350
 langchain-openai==0.0.2
-# Pre-built wheels for better compatibility
---find-links https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.0/en_core_web_sm-3.7.0.tar.gz
---find-links https://download.pytorch.org/whl/cpu/torch_stable.html
-numpy>=1.26.0
-thinc>=8.1.8,<8.2.0
-cymem>=2.0.6,<2.1.0
-preshed>=3.0.6,<3.1.0
-murmurhash>=1.0.7,<1.1.0 
+bland==0.1.0 
