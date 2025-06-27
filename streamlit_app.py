@@ -26,69 +26,38 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-# Load spaCy model
-@st.cache_resource
-def load_spacy_model():
+# Set page config first
+st.set_page_config(
+    page_title="AI Meeting Scheduler",
+    page_icon="📅",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# Load spaCy model with error handling
+@st.cache_resource(show_spinner=True)
+def load_nlp():
     try:
         return spacy.load('en_core_web_sm')
     except OSError:
-        # If loading fails, try downloading the model
-        try:
-            import subprocess
-            subprocess.run(['python', '-m', 'spacy', 'download', 'en_core_web_sm'], check=True)
-            return spacy.load('en_core_web_sm')
-        except Exception as e:
-            st.error(f"Failed to load spaCy model: {str(e)}")
-            logger.error(f"Error loading spaCy model: {str(e)}")
-            # Return a blank English model as fallback
-            return spacy.blank('en')
+        st.warning("Loading language model...")
+        import subprocess
+        subprocess.run(['python', '-m', 'spacy', 'download', 'en_core_web_sm'])
+        return spacy.load('en_core_web_sm')
 
-# Initialize the model
-nlp = load_spacy_model()
+try:
+    nlp = load_nlp()
+except Exception as e:
+    st.error(f"Error loading language model: {str(e)}")
+    logger.error(f"Error loading language model: {str(e)}", exc_info=True)
+    nlp = spacy.blank('en')  # Fallback to blank model
 
-class ConversationState:
-    def __init__(self):
-        self.reset()
-    
-    def reset(self):
-        """Reset the conversation state"""
-        self.meeting_duration = None
-        self.preferred_time = None
-        self.attendees = []
-        self.purpose = None
-        self.available_slots = []
-        self.current_step = 'initial'
-        self.last_question_asked = None
-        self.slots_shown = False
-        self.selected_slot = None
-        self.meeting_confirmed = False
-        self.answered_questions = set()
-
-    def is_complete(self):
-        """Check if we have all required information"""
-        return bool(
-            self.purpose and 
-            (self.meeting_duration or self.meeting_duration == 30) and  # Allow default duration
-            (self.preferred_time or self.selected_slot) and 
-            self.attendees
-        )
-
-    def get_next_question(self):
-        """Get the next question to ask based on missing info and what hasn't been asked"""
-        # Priority order for questions
-        question_order = ['purpose', 'duration', 'time', 'attendees']
-        
-        for question in question_order:
-            if question not in self.answered_questions:
-                if (question == 'purpose' and not self.purpose) or \
-                   (question == 'duration' and not self.meeting_duration) or \
-                   (question == 'time' and not self.preferred_time and not self.selected_slot) or \
-                   (question == 'attendees' and not self.attendees):
-                    return question
-        return None
-
-# Initialize Google Cloud AI Platform
-aiplatform.init(project=os.getenv('GOOGLE_CLOUD_PROJECT'))
+# Initialize Google Cloud AI Platform if project ID is available
+if os.getenv('GOOGLE_CLOUD_PROJECT'):
+    try:
+        aiplatform.init(project=os.getenv('GOOGLE_CLOUD_PROJECT'))
+    except Exception as e:
+        logger.error(f"Error initializing AI Platform: {str(e)}")
 
 # Google OAuth2 Configuration
 CLIENT_SECRETS_FILE = os.path.join(os.path.dirname(__file__), 'client_secrets.json')
@@ -598,29 +567,40 @@ def extract_meeting_details(text):
     return details
 
 def main():
-    # Initialize conversation state if needed
-    if st.session_state.conversation_state is None:
-        initialize_conversation_state()
-    
-    # Check if this is an OAuth callback
-    if 'code' in st.query_params:
-        handle_oauth_callback()
-        return
-    
-    # Check for Google Calendar authorization
-    if not st.session_state.credentials:
-        st.warning("Please authorize access to Google Calendar to continue")
-        authorize_google_calendar()
-        return
-    
-    # Add tabs for text and voice interfaces
-    tab1, tab2 = st.tabs(["Text Chat", "Voice Call"])
-    
-    with tab1:
-        show_chat_interface()
-    
-    with tab2:
-        show_voice_interface()
+    try:
+        # Health check endpoint
+        if "healthz" in st.query_params:
+            st.success("App is healthy")
+            return
+
+        # Initialize conversation state if needed
+        if 'conversation_state' not in st.session_state:
+            st.session_state.conversation_state = ConversationState()
+            st.session_state.initialized = False
+        
+        # Check if this is an OAuth callback
+        if 'code' in st.query_params:
+            handle_oauth_callback()
+            return
+        
+        # Check for Google Calendar authorization
+        if not st.session_state.credentials:
+            st.warning("Please authorize access to Google Calendar to continue")
+            authorize_google_calendar()
+            return
+        
+        # Add tabs for text and voice interfaces
+        tab1, tab2 = st.tabs(["Text Chat", "Voice Call"])
+        
+        with tab1:
+            show_chat_interface()
+        
+        with tab2:
+            show_voice_interface()
+            
+    except Exception as e:
+        st.error(f"An error occurred: {str(e)}")
+        logger.error(f"Application error: {str(e)}", exc_info=True)
 
 if __name__ == "__main__":
     main() 
