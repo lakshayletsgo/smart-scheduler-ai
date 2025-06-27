@@ -33,6 +33,26 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# Initialize Google Cloud AI Platform if project ID is available
+if os.getenv('GOOGLE_CLOUD_PROJECT'):
+    try:
+        aiplatform.init(project=os.getenv('GOOGLE_CLOUD_PROJECT'))
+    except Exception as e:
+        logger.error(f"Error initializing AI Platform: {str(e)}")
+
+# Google OAuth2 Configuration
+CLIENT_SECRETS_FILE = os.path.join(os.path.dirname(__file__), 'client_secrets.json')
+SCOPES = ['https://www.googleapis.com/auth/calendar.readonly',
+          'https://www.googleapis.com/auth/calendar.events']
+
+# Get the deployment URL from Streamlit's environment or use localhost as fallback
+def get_oauth_redirect_uri():
+    if os.getenv('STREAMLIT_SERVER_URL'):
+        base_url = os.getenv('STREAMLIT_SERVER_URL')
+    else:
+        base_url = 'http://localhost:8501'
+    return f"{base_url}/oauth2callback"
+
 class ConversationState:
     def __init__(self):
         self.purpose = None
