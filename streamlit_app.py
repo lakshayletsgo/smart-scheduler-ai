@@ -82,7 +82,14 @@ aiplatform.init(project=os.getenv('GOOGLE_CLOUD_PROJECT'))
 CLIENT_SECRETS_FILE = os.path.join(os.path.dirname(__file__), 'client_secrets.json')
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly',
           'https://www.googleapis.com/auth/calendar.events']
-OAUTH_REDIRECT_URI = 'http://127.0.0.1:5000/oauth2callback'
+
+# Get the deployment URL from Streamlit's environment or use localhost as fallback
+def get_oauth_redirect_uri():
+    if os.getenv('STREAMLIT_SERVER_URL'):
+        base_url = os.getenv('STREAMLIT_SERVER_URL')
+    else:
+        base_url = 'http://localhost:8501'
+    return f"{base_url}/oauth2callback"
 
 # Initialize session state
 if 'conversation_state' not in st.session_state:
@@ -134,7 +141,7 @@ def authorize_google_calendar():
     flow = Flow.from_client_secrets_file(
         CLIENT_SECRETS_FILE,
         scopes=SCOPES,
-        redirect_uri=OAUTH_REDIRECT_URI
+        redirect_uri=get_oauth_redirect_uri()
     )
     
     # Generate a secure state parameter
@@ -174,7 +181,7 @@ def handle_oauth_callback():
             flow = Flow.from_client_secrets_file(
                 CLIENT_SECRETS_FILE,
                 scopes=SCOPES,
-                redirect_uri=OAUTH_REDIRECT_URI,
+                redirect_uri=get_oauth_redirect_uri(),
                 state=received_state
             )
             
