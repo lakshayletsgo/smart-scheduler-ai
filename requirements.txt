@@ -13,4 +13,4 @@ en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_
 dateparser==1.2.0
 pytz==2024.1
 requests==2.31.0
-bland==0.1.0 
+bland==0.3.0 
