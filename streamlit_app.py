@@ -74,7 +74,9 @@ def load_nlp():
             # If loading fails, try downloading and loading
             st.warning("Downloading language model... This may take a moment.")
             import subprocess
-            subprocess.check_call([sys.executable, "-m", "spacy", "download", "en_core_web_sm"])
+            # Use spacy.cli.download instead of subprocess
+            import spacy.cli
+            spacy.cli.download('en_core_web_sm')
             return spacy.load('en_core_web_sm')
         except Exception as e:
             # If both attempts fail, use blank model as fallback
