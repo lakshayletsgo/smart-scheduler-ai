@@ -2,10 +2,10 @@ from google.generativeai import GenerativeModel
 import google.generativeai as genai
 import re
 from datetime import datetime, timedelta
-import dateparser
 import os
 import streamlit as st
 import calendar_utils
+from dateutil import parser
 
 # Initialize Gemini
 genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
@@ -37,40 +37,83 @@ Previous context:
 
 def extract_time_expression(text):
     """Parse natural language time expressions into structured datetime objects."""
-    # Try to parse the entire expression first
-    parsed_time = dateparser.parse(text, settings={'PREFER_DATES_FROM': 'future'})
-    if parsed_time:
-        return parsed_time
-    
-    # Handle relative time expressions
-    relative_patterns = {
-        r'late next week': lambda: datetime.now() + timedelta(days=10),
-        r'early next week': lambda: datetime.now() + timedelta(days=7),
-        r'end of day': lambda: datetime.now().replace(hour=17, minute=0),
-        r'tomorrow morning': lambda: (datetime.now() + timedelta(days=1)).replace(hour=9, minute=0),
-        r'tomorrow afternoon': lambda: (datetime.now() + timedelta(days=1)).replace(hour=13, minute=0),
+    # Common time patterns
+    time_patterns = {
+        r'\b(at\s+)?(\d{1,2}):(\d{2})\s*(am|pm)?\b': lambda m: f"{m.group(2)}:{m.group(3)} {m.group(4) or 'am'}",
+        r'\b(at\s+)?(\d{1,2})\s*(am|pm)\b': lambda m: f"{m.group(2)}:00 {m.group(3)}",
     }
     
-    for pattern, time_func in relative_patterns.items():
-        if re.search(pattern, text.lower()):
-            return time_func()
+    # Common date patterns
+    date_patterns = {
+        'today': datetime.now(),
+        'tomorrow': datetime.now() + timedelta(days=1),
+        'next week': datetime.now() + timedelta(days=7),
+        'late next week': datetime.now() + timedelta(days=10),
+        'early next week': datetime.now() + timedelta(days=7),
+        'end of day': datetime.now().replace(hour=17, minute=0),
+        'tomorrow morning': (datetime.now() + timedelta(days=1)).replace(hour=9, minute=0),
+        'tomorrow afternoon': (datetime.now() + timedelta(days=1)).replace(hour=13, minute=0),
+    }
+    
+    # Try to find time first
+    time_str = None
+    for pattern, formatter in time_patterns.items():
+        match = re.search(pattern, text.lower())
+        if match:
+            time_str = formatter(match)
+            break
+    
+    # Try to find date
+    date_str = None
+    for keyword, date_value in date_patterns.items():
+        if keyword in text.lower():
+            date_str = date_value.strftime('%Y-%m-%d')
+            break
+    
+    # If explicit patterns don't work, try dateutil parser
+    if not (date_str and time_str):
+        try:
+            parsed = parser.parse(text, fuzzy=True, default=datetime.now())
+            if parsed > datetime.now():
+                return parsed
+        except:
+            return None
+    else:
+        try:
+            # Combine date and time if we have both
+            if date_str and time_str:
+                return parser.parse(f"{date_str} {time_str}")
+            elif time_str:
+                today = datetime.now().strftime('%Y-%m-%d')
+                return parser.parse(f"{today} {time_str}")
+        except:
+            return None
     
     return None
 
 def extract_duration(text):
     """Extract meeting duration from text."""
-    patterns = {
-        r'(\d+)\s*hour': lambda x: int(x) * 60,
-        r'(\d+)\s*hr': lambda x: int(x) * 60,
-        r'(\d+)\s*min': lambda x: int(x),
-        r'half\s*hour': lambda x: 30,
-        r'quarter\s*hour': lambda x: 15,
+    duration_map = {
+        'half hour': 30,
+        'hour': 60,
+        'one hour': 60,
+        'two hours': 120,
+        'three hours': 180,
     }
     
-    for pattern, duration_func in patterns.items():
-        match = re.search(pattern, text.lower())
-        if match:
-            return duration_func(match.group(1) if match.groups() else None)
+    # Check for numeric patterns
+    match = re.search(r'(\d+)\s*(hour|hr|min|minute)s?', text.lower())
+    if match:
+        num = int(match.group(1))
+        unit = match.group(2)
+        if unit.startswith(('hour', 'hr')):
+            return num * 60
+        return num
+    
+    # Check for word patterns
+    for phrase, minutes in duration_map.items():
+        if phrase in text.lower():
+            return minutes
     
     # Default to 30 minutes if no duration specified
     return 30

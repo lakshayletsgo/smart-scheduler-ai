@@ -1,11 +1,24 @@
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
+import nltk
+from nltk.tokenize import word_tokenize
+from nltk.tag import pos_tag
 from dateutil import parser
 import logging
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
+# Download required NLTK data
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
+try:
+    nltk.data.find('taggers/averaged_perceptron_tagger')
+except LookupError:
+    nltk.download('averaged_perceptron_tagger')
 
 class MeetingDetails:
     def __init__(self):
@@ -28,66 +41,108 @@ class MeetingDetails:
         return f"MeetingDetails(purpose={self.purpose}, date={self.date}, time={self.time}, duration={self.duration}, attendees={self.attendees})"
 
 def extract_datetime(text):
-    """Extract date and time using dateparser."""
-    try:
-        parsed_date = parser.parse(
-            text,
-            settings={
-                'PREFER_DATES_FROM': 'future',
-                'RELATIVE_BASE': datetime.now()
-            }
-        )
-        if parsed_date and parsed_date > datetime.now():
-            return parsed_date
-    except Exception as e:
-        logger.error(f"Error parsing date/time: {e}")
+    """Extract date and time using simple patterns and dateutil."""
+    # Common time patterns
+    time_patterns = {
+        r'\b(at\s+)?(\d{1,2}):(\d{2})\s*(am|pm)?\b': lambda m: f"{m.group(2)}:{m.group(3)} {m.group(4) or 'am'}",
+        r'\b(at\s+)?(\d{1,2})\s*(am|pm)\b': lambda m: f"{m.group(2)}:00 {m.group(3)}",
+    }
+    
+    # Common date patterns
+    date_patterns = {
+        'today': datetime.now(),
+        'tomorrow': datetime.now() + timedelta(days=1),
+        'next week': datetime.now() + timedelta(days=7),
+    }
+    
+    # Try to find time first
+    time_str = None
+    for pattern, formatter in time_patterns.items():
+        match = re.search(pattern, text.lower())
+        if match:
+            time_str = formatter(match)
+            break
+    
+    # Try to find date
+    date_str = None
+    for keyword, date_value in date_patterns.items():
+        if keyword in text.lower():
+            date_str = date_value.strftime('%Y-%m-%d')
+            break
+    
+    # If explicit patterns don't work, try dateutil parser
+    if not (date_str and time_str):
+        try:
+            parsed = parser.parse(text, fuzzy=True, default=datetime.now())
+            if parsed > datetime.now():
+                return parsed
+        except:
+            return None
+    else:
+        try:
+            # Combine date and time if we have both
+            if date_str and time_str:
+                return parser.parse(f"{date_str} {time_str}")
+            elif time_str:
+                today = datetime.now().strftime('%Y-%m-%d')
+                return parser.parse(f"{today} {time_str}")
+        except:
+            return None
+    
     return None
 
 def extract_duration(text):
-    """Extract duration using regex patterns."""
-    # Check for numeric patterns first
-    duration_patterns = [
-        (r'(\d+)\s*(hour|hr|min|minute|minutes?|hrs?)', 
-         lambda x: int(float(x[0]) * (60 if x[1].startswith(('hour', 'hr')) else 1))),
-        (r'(half|one|two|three|four|five)\s*(hour|hr)', 
-         lambda x: {'half': 30, 'one': 60, 'two': 120, 'three': 180, 'four': 240, 'five': 300}[x[0]])
-    ]
+    """Extract duration using simple patterns."""
+    duration_map = {
+        'half hour': 30,
+        'hour': 60,
+        'one hour': 60,
+        'two hours': 120,
+        'three hours': 180,
+    }
     
-    for pattern, converter in duration_patterns:
-        match = re.search(pattern, text.lower())
-        if match:
-            try:
-                return converter(match.groups())
-            except (ValueError, KeyError) as e:
-                logger.error(f"Error converting duration: {e}")
+    # Check for numeric patterns
+    match = re.search(r'(\d+)\s*(hour|hr|min|minute)s?', text.lower())
+    if match:
+        num = int(match.group(1))
+        unit = match.group(2)
+        if unit.startswith(('hour', 'hr')):
+            return num * 60
+        return num
     
-    return None
+    # Check for word patterns
+    for phrase, minutes in duration_map.items():
+        if phrase in text.lower():
+            return minutes
+    
+    # Default duration if none specified
+    return 30
 
 def extract_purpose(text):
-    """Extract meeting purpose using regex patterns."""
-    # Try regex patterns first
-    purpose_patterns = [
-        r'(?:meeting|call|discussion) (?:about|for|to|regarding) (.*?)(?=(?:with|at|on|by|\.|$))',
-        r'(?:discuss|talk about|review) (.*?)(?=(?:with|at|on|by|\.|$))',
-        r'(?:purpose is|to discuss|regarding|about) (.*?)(?=(?:with|at|on|by|\.|$))',
-        r'(?:schedule|set up|arrange|plan|organize|book).*?(?:meeting|call|session)\s+(?:for|about|to discuss|regarding)\s+(.*?)(?=\s+(?:with|at|on|by|\.|\?|$))'
-    ]
+    """Extract meeting purpose using POS tagging."""
+    # Tokenize and tag parts of speech
+    tokens = word_tokenize(text)
+    tagged = pos_tag(tokens)
     
-    for pattern in purpose_patterns:
-        match = re.search(pattern, text, re.I)
-        if match:
-            purpose = match.group(1).strip()
-            if len(purpose) > 3:
+    # Look for verb-noun patterns that might indicate purpose
+    purpose_indicators = ['discuss', 'review', 'talk about', 'meet about', 'meeting for']
+    
+    for indicator in purpose_indicators:
+        if indicator in text.lower():
+            start_idx = text.lower().find(indicator) + len(indicator)
+            end_idx = text.find('.', start_idx)
+            if end_idx == -1:
+                end_idx = len(text)
+            purpose = text[start_idx:end_idx].strip()
+            if purpose:
                 return purpose
     
-    # If no purpose found, try first sentence that doesn't contain date/time
-    sentences = re.split(r'[.!?]+', text)
-    for sentence in sentences:
-        # Skip if sentence contains time/date indicators
-        if not re.search(r'\b(?:today|tomorrow|next|at|on|pm|am|:\d{2}|\d{1,2}(?::\d{2})?|@)\b', sentence.lower()):
-            purpose = sentence.strip()
-            if len(purpose) > 3:
-                return purpose
+    # If no clear indicator, look for noun phrases after "meeting" or "call"
+    words = text.split()
+    for i, word in enumerate(words):
+        if word.lower() in ['meeting', 'call']:
+            if i + 1 < len(words):
+                return ' '.join(words[i+1:i+6])  # Take next 5 words as purpose
     
     return None
 
@@ -97,7 +152,7 @@ def extract_attendees(text):
     return re.findall(email_pattern, text)
 
 def extract_meeting_details(text):
-    """Extract all meeting details using regex patterns."""
+    """Extract all meeting details using simplified patterns."""
     details = MeetingDetails()
     logger.debug(f"Processing text: {text}")
     

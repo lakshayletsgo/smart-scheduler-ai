@@ -21,9 +21,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 import re
 from dateutil import parser
-import spacy
-from spacy.matcher import Matcher
 import logging
+from entity_extractor import extract_meeting_details, MeetingDetails
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -42,14 +41,6 @@ OAUTH_REDIRECT_URI = 'https://lakshayletsgo-smart-scheduler-ai-streamlit-app-xrb
 
 # Store active bot instance
 bot = None
-
-# Load spaCy model for NLP
-try:
-    nlp = spacy.load('en_core_web_sm')
-except OSError:
-    import subprocess
-    subprocess.run(['python', '-m', 'spacy', 'download', 'en_core_web_sm'])
-    nlp = spacy.load('en_core_web_sm')
 
 def credentials_to_dict(credentials):
     return {
@@ -216,106 +207,6 @@ class MeetingDetails:
             'attendees': self.attendees,
             'complete': self.complete
         }
-
-def extract_meeting_details(text):
-    doc = nlp(text)
-    details = MeetingDetails()
-    logger.debug(f"Extracting details from text: {text}")
-
-    # Extract date and time using spaCy's entity recognition
-    for ent in doc.ents:
-        if ent.label_ == 'DATE':
-            try:
-                parsed_date = parser.parse(ent.text)
-                details.date = parsed_date.strftime('%Y-%m-%d')
-                logger.debug(f"Extracted date: {details.date}")
-            except:
-                pass
-        elif ent.label_ == 'TIME':
-            try:
-                parsed_time = parser.parse(ent.text)
-                details.time = parsed_time.strftime('%H:%M')
-                logger.debug(f"Extracted time: {details.time}")
-            except:
-                pass
-
-    # Extract email addresses for attendees
-    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-    details.attendees = re.findall(email_pattern, text)
-    logger.debug(f"Extracted attendees: {details.attendees}")
-
-    # Extract purpose using improved patterns
-    purpose_patterns = [
-        [{'LOWER': 'schedule'}, {'OP': '*'}, {'POS': 'NOUN'}, {'LOWER': 'meeting'}],
-        [{'LOWER': 'schedule'}, {'OP': '*'}, {'POS': 'NOUN'}],
-        [{'LOWER': 'about'}, {'OP': '+'}, {'POS': 'NOUN'}],
-        [{'LOWER': 'discuss'}, {'OP': '+'}, {'POS': 'NOUN'}],
-        [{'LOWER': 'regarding'}, {'OP': '+'}, {'POS': 'NOUN'}],
-        [{'LOWER': 'for'}, {'OP': '+'}, {'POS': 'NOUN'}],
-        [{'POS': 'NOUN'}, {'LOWER': 'meeting'}],
-        [{'POS': 'ADJ'}, {'LOWER': 'meeting'}]
-    ]
-
-    matcher = Matcher(nlp.vocab)
-    for i, pattern in enumerate(purpose_patterns):
-        matcher.add(f"PURPOSE_{i}", [pattern])
-
-    matches = matcher(doc)
-    
-    # Get the longest matching span for purpose
-    if matches:
-        longest_match = max(matches, key=lambda x: x[2] - x[1])
-        match_id, start, end = longest_match
-        purpose_span = doc[start:end]
-        
-        # Get the sentence containing the purpose
-        for sent in doc.sents:
-            if purpose_span.start >= sent.start and purpose_span.end <= sent.end:
-                # Extract the entire relevant part of the sentence
-                relevant_text = []
-                for token in sent:
-                    if token.dep_ in ['nsubj', 'dobj', 'pobj', 'compound', 'amod'] or token.pos_ in ['NOUN', 'ADJ']:
-                        relevant_text.append(token.text)
-                
-                if relevant_text:
-                    details.purpose = ' '.join(relevant_text).strip()
-                    break
-        
-        if not details.purpose:
-            details.purpose = purpose_span.text
-
-    # If no purpose was found using patterns, use a simple heuristic
-    if not details.purpose:
-        for sent in doc.sents:
-            # Skip sentences that are mainly about date/time
-            has_datetime = any(ent.label_ in ['DATE', 'TIME'] for ent in sent.ents)
-            if not has_datetime and len(sent.text.split()) > 3:
-                # Extract meaningful parts of the sentence
-                meaningful_parts = []
-                for token in sent:
-                    if token.pos_ in ['NOUN', 'VERB', 'ADJ'] and not token.is_stop:
-                        meaningful_parts.append(token.text)
-                if meaningful_parts:
-                    details.purpose = ' '.join(meaningful_parts)
-                    break
-
-    logger.debug(f"Extracted purpose: {details.purpose}")
-
-    # Clean up the purpose
-    if details.purpose:
-        # Remove common prefixes like "schedule" or "about"
-        prefixes_to_remove = ['schedule', 'about', 'for', 'regarding']
-        purpose_words = details.purpose.lower().split()
-        while purpose_words and purpose_words[0] in prefixes_to_remove:
-            purpose_words.pop(0)
-        details.purpose = ' '.join(purpose_words).capitalize()
-
-    # Check if we have all necessary details
-    details.complete = bool(details.purpose and details.date and details.time and details.attendees)
-    logger.debug(f"Details complete: {details.complete}")
-    logger.debug(f"Final extracted details: {details.to_dict()}")
-
-    return details
 
 @app.route('/')
 def home():
@@ -630,10 +521,10 @@ def schedule_meeting():
                 'error': f'Failed to schedule meeting: {result}'
             })
     except Exception as e:
-        logger.error(f"Unexpected error in schedule_meeting: {str(e)}")
+        logger.error(f"Error in schedule_meeting: {str(e)}")
         return jsonify({
             'success': False,
-            'error': f'Error scheduling meeting: {str(e)}'
+            'error': str(e)
         })
 
 @app.route('/start-call', methods=['POST'])

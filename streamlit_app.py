@@ -1,6 +1,5 @@
 import streamlit as st
 import os
-from google.cloud import aiplatform
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
@@ -33,13 +32,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
-
-# Initialize Google Cloud AI Platform if project ID is available
-if os.getenv('GOOGLE_CLOUD_PROJECT'):
-    try:
-        aiplatform.init(project=os.getenv('GOOGLE_CLOUD_PROJECT'))
-    except Exception as e:
-        logger.error(f"Error initializing AI Platform: {str(e)}")
 
 # Google OAuth2 Configuration
 CLIENT_SECRETS_FILE = os.path.join(os.path.dirname(__file__), 'client_secrets.json')
