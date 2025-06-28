@@ -233,43 +233,80 @@ def extract_meeting_details(text):
         details.duration = amount
         logger.debug(f"Extracted duration: {amount} minutes")
 
-    # Extract date/time using dateparser with improved settings
+    # Extract date/time using improved patterns
     try:
-        # First try to find explicit time patterns
-        time_match = re.search(r'at\s+(\d{1,2}(?::\d{2})?(?:\s*[ap]m)?)', text, re.I)
-        time_str = time_match.group(1) if time_match else None
+        # Common time expressions
+        time_patterns = {
+            r'tomorrow\s+morning': lambda: (datetime.now() + timedelta(days=1)).replace(hour=9, minute=0),
+            r'tomorrow\s+afternoon': lambda: (datetime.now() + timedelta(days=1)).replace(hour=14, minute=0),
+            r'tomorrow\s+evening': lambda: (datetime.now() + timedelta(days=1)).replace(hour=17, minute=0),
+            r'next\s+week': lambda: datetime.now() + timedelta(days=7),
+            r'next\s+monday': lambda d: d + timedelta(days=(7 - d.weekday())),
+            r'next\s+tuesday': lambda d: d + timedelta(days=((7 - d.weekday()) + 1) % 7),
+            r'next\s+wednesday': lambda d: d + timedelta(days=((7 - d.weekday()) + 2) % 7),
+            r'next\s+thursday': lambda d: d + timedelta(days=((7 - d.weekday()) + 3) % 7),
+            r'next\s+friday': lambda d: d + timedelta(days=((7 - d.weekday()) + 4) % 7),
+            r'tomorrow': lambda: datetime.now() + timedelta(days=1)
+        }
 
-        # Try to find explicit date patterns
-        date_match = re.search(r'(?:on\s+)?(next\s+)?(\w+day|tomorrow|next week|today)', text, re.I)
-        date_str = date_match.group(0) if date_match else None
+        # First try to match common time expressions
+        parsed_date = None
+        for pattern, time_func in time_patterns.items():
+            if re.search(pattern, text.lower()):
+                base_date = time_func(datetime.now()) if callable(time_func) else time_func()
+                parsed_date = base_date
+                break
 
-        # Look for date/time entities in NLTK's named entities
-        for chunk in named_entities:
-            if hasattr(chunk, 'label'):
-                if chunk.label() in ['DATE', 'TIME']:
-                    entity_text = ' '.join([token for token, pos in chunk.leaves()])
-                    if not date_str and 'time' not in entity_text.lower():
-                        date_str = entity_text
-                    elif not time_str and any(t in entity_text.lower() for t in ['am', 'pm', ':'] + [str(i) for i in range(24)]):
-                        time_str = entity_text
+        # If no common expression found, try to find explicit date/time
+        if not parsed_date:
+            # Look for specific date formats (e.g., "28 June 2025")
+            date_match = re.search(r'(\d{1,2})\s*(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s*(\d{4})?', text)
+            if date_match:
+                date_str = ' '.join(part for part in date_match.groups() if part)
+                parsed_date = parser.parse(date_str, fuzzy=True)
 
-        # Combine date and time if found separately
-        if date_str or time_str:
-            parse_str = f"{date_str or 'today'} {time_str or '9am'}"
-        else:
-            parse_str = text
+            # Look for specific time (e.g., "at 9am", "at 14:30")
+            time_match = re.search(r'(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|AM|PM)?', text)
+            if time_match:
+                hour = int(time_match.group(1))
+                minute = int(time_match.group(2)) if time_match.group(2) else 0
+                meridiem = time_match.group(3)
 
-        parsed_date = parser.parse(
-            parse_str,
-            settings={
+                # Adjust hour for PM
+                if meridiem and meridiem.lower() == 'pm' and hour < 12:
+                    hour += 12
+                elif not meridiem and hour < 9:  # Default to AM for ambiguous times before 9
+                    hour += 12
+
+                if parsed_date:
+                    parsed_date = parsed_date.replace(hour=hour, minute=minute)
+                else:
+                    # If we only have time, use tomorrow as default date
+                    parsed_date = datetime.now().replace(hour=hour, minute=minute)
+                    if parsed_date <= datetime.now():
+                        parsed_date += timedelta(days=1)
+
+        # If still no parsed_date, try dateparser as fallback
+        if not parsed_date:
+            parsed_date = parser.parse(text, settings={
                 'PREFER_DATES_FROM': 'future',
                 'RELATIVE_BASE': datetime.now(),
                 'PREFER_DAY_OF_MONTH': 'first',
-                'DATE_ORDER': 'MDY'
-            }
-        )
+                'DATE_ORDER': 'DMY'
+            })
 
-        if parsed_date and parsed_date > datetime.now():
+        if parsed_date:
+            # Ensure we're not scheduling in the past
+            if parsed_date <= datetime.now():
+                if parsed_date.date() == datetime.now().date():
+                    # If it's today but time is in past, try next available hour
+                    parsed_date = datetime.now().replace(
+                        minute=0, second=0, microsecond=0
+                    ) + timedelta(hours=1)
+                else:
+                    # If date is in past, move it to tomorrow same time
+                    parsed_date = parsed_date + timedelta(days=1)
+
             details.date = parsed_date.strftime('%Y-%m-%d')
             details.time = parsed_date.strftime('%H:%M')
             logger.debug(f"Extracted date/time: {details.date} {details.time}")
@@ -548,21 +585,30 @@ def process_message(message):
         state_updated = True
         logger.debug(f"Updated duration: {details.duration}")
     
+    # Handle time extraction
     if details.date and details.time:
         try:
-            # Combine date and time into a datetime object
+            # Combine date and time
             date_str = f"{details.date} {details.time}"
             if state.set_preferred_time(date_str):
                 state.answered_questions.add('time')
-                response_parts.append(f"Meeting time set to: {state.preferred_time['start'].strftime('%A, %B %d at %I:%M %p')}")
+                formatted_time = state.preferred_time['start'].strftime('%A, %B %d at %I:%M %p')
+                response_parts.append(f"Meeting time set to: {formatted_time}")
                 state_updated = True
                 logger.debug(f"Updated time: {state.preferred_time}")
             else:
+                # If the time is invalid (past), ask for a future time
                 response_parts.append("Please provide a future date and time for the meeting.")
+                if 'time' in state.answered_questions:
+                    state.answered_questions.remove('time')
+                state.preferred_time = None
         except ValueError as e:
             logger.error(f"Error parsing date/time: {e}")
             response_parts.append("I couldn't understand the date and time. Please provide them in a clearer format.")
-        
+            if 'time' in state.answered_questions:
+                state.answered_questions.remove('time')
+            state.preferred_time = None
+    
     if details.attendees:
         new_attendees = [email for email in details.attendees if email not in state.attendees]
         if new_attendees:
@@ -606,7 +652,10 @@ def process_message(message):
             elif next_question == 'duration':
                 response_parts.append("How long would you like the meeting to be? (default is 30 minutes)")
             elif next_question == 'time':
-                response_parts.append("When would you like to schedule this meeting?")
+                response_parts.append("When would you like to schedule this meeting? You can say things like:\n" +
+                                   "• 'tomorrow morning'\n" +
+                                   "• 'next Monday at 2pm'\n" +
+                                   "• 'June 28 at 10am'")
             elif next_question == 'attendees':
                 response_parts.append("Who would you like to invite to this meeting? (Please provide email addresses)")
         return "\n".join(response_parts)
@@ -619,7 +668,10 @@ def process_message(message):
         elif next_question == 'duration':
             return "How long would you like the meeting to be? (default is 30 minutes)"
         elif next_question == 'time':
-            return "When would you like to schedule this meeting?"
+            return "When would you like to schedule this meeting? You can say things like:\n" + \
+                   "• 'tomorrow morning'\n" + \
+                   "• 'next Monday at 2pm'\n" + \
+                   "• 'June 28 at 10am'"
         elif next_question == 'attendees':
             return "Who would you like to invite to this meeting? (Please provide email addresses)"
     
