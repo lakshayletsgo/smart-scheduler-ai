@@ -960,71 +960,71 @@ def main():
             st.success("App is healthy")
             return
 
-    # Initialize conversation state if needed
+        # Initialize conversation state if needed
         if 'conversation_state' not in st.session_state:
             st.session_state.conversation_state = ConversationState()
             st.session_state.initialized = False
     
-    # Check if this is an OAuth callback
+        # Check if this is an OAuth callback
         if 'code' in st.query_params:
             handle_oauth_callback()
             return
         
-        # Check for Google Calendar authorization
+        # If not authenticated, show the authentication page
         if not st.session_state.credentials:
-                st.markdown('<div class="auth-container">', unsafe_allow_html=True)
-                st.markdown('<h1 class="auth-title">Welcome to AI Meeting Scheduler</h1>', unsafe_allow_html=True)
-                st.markdown('<p class="auth-description">Your intelligent assistant for effortless meeting scheduling. Connect your Google Calendar to get started.</p>', unsafe_allow_html=True)
+            st.markdown('<div class="auth-container">', unsafe_allow_html=True)
+            st.markdown('<h1 class="auth-title">Welcome to AI Meeting Scheduler</h1>', unsafe_allow_html=True)
+            st.markdown('<p class="auth-description">Your intelligent assistant for effortless meeting scheduling. Connect your Google Calendar to get started.</p>', unsafe_allow_html=True)
+            
+            # Features section using Streamlit components
+            st.write("")  # Add some spacing
+            st.markdown("#### Key Features")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("🤖 **Natural Language**")
+                st.write("Just chat like you would with a human")
                 
-                # Features section using Streamlit components
-                st.write("")  # Add some spacing
-                st.markdown("#### Key Features")
-                col1, col2 = st.columns(2)
+                st.markdown("✨ **Smart Scheduling**")
+                st.write("Automatic conflict resolution")
                 
-                with col1:
-                    st.markdown("🤖 **Natural Language**")
-                    st.write("Just chat like you would with a human")
-                    
-                    st.markdown("✨ **Smart Scheduling**")
-                    st.write("Automatic conflict resolution")
-                    
-                with col2:
-                    st.markdown("📅 **Calendar Integration**")
-                    st.write("Automatic availability check")
-                    
-                    st.markdown("📧 **Automated Invites**")
-                    st.write("Calendar invites sent automatically")
+            with col2:
+                st.markdown("📅 **Calendar Integration**")
+                st.write("Automatic availability check")
                 
-                # Get authorization URL
-                flow = Flow.from_client_secrets_file(
-                    CLIENT_SECRETS_FILE,
-                    scopes=SCOPES,
-                    redirect_uri=get_oauth_redirect_uri()
-                )
-                
-                # Generate a secure state parameter
-                state = os.urandom(16).hex()
-                st.session_state.oauth_state = state
-                
-                authorization_url, _ = flow.authorization_url(
-                    access_type='offline',
-                    include_granted_scopes='true',
-                    state=state,
-                    prompt='consent'
-                )
-                
-                st.markdown(f'<a href="{authorization_url}" class="auth-button">Connect Google Calendar</a>', unsafe_allow_html=True)
-                st.markdown("</div>", unsafe_allow_html=True)
-        return
-        
-        # Add tabs for text and voice interfaces
-        tab1, tab2 = st.tabs(["Text Chat", "Voice Call"])
-        
-        with tab1:
-            show_chat_interface()
-        
-        with tab2:
-            show_voice_interface()
+                st.markdown("📧 **Automated Invites**")
+                st.write("Calendar invites sent automatically")
+            
+            # Get authorization URL
+            flow = Flow.from_client_secrets_file(
+                CLIENT_SECRETS_FILE,
+                scopes=SCOPES,
+                redirect_uri=get_oauth_redirect_uri()
+            )
+            
+            # Generate a secure state parameter
+            state = os.urandom(16).hex()
+            st.session_state.oauth_state = state
+            
+            authorization_url, _ = flow.authorization_url(
+                access_type='offline',
+                include_granted_scopes='true',
+                state=state,
+                prompt='consent'
+            )
+            
+            st.markdown(f'<a href="{authorization_url}" class="auth-button">Connect Google Calendar</a>', unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            # User is authenticated, show the main interface
+            # Add tabs for text and voice interfaces
+            tab1, tab2 = st.tabs(["Text Chat", "Voice Call"])
+            
+            with tab1:
+                show_chat_interface()
+            
+            with tab2:
+                show_voice_interface()
                 
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
