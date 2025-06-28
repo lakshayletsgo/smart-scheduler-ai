@@ -702,7 +702,6 @@ def show_chat_interface():
             st.write("- Time: Not set")
             
         st.write(f"- Attendees: {', '.join(state.attendees) if state.attendees else 'None'}")
-        st.write(f"- Current Step: {state.current_step}")
         st.write(f"- Answered Questions: {', '.join(state.answered_questions)}")
         st.write(f"- Slots Shown: {state.slots_shown}")
         
