@@ -36,7 +36,7 @@ st.set_page_config(
 # Initialize Google Cloud AI Platform if project ID is available
 if os.getenv('GOOGLE_CLOUD_PROJECT'):
     try:
-aiplatform.init(project=os.getenv('GOOGLE_CLOUD_PROJECT'))
+        aiplatform.init(project=os.getenv('GOOGLE_CLOUD_PROJECT'))
     except Exception as e:
         logger.error(f"Error initializing AI Platform: {str(e)}")
 
@@ -404,14 +404,14 @@ def process_message(message):
     # Update state with extracted information
     if details.purpose and not state.purpose:
         state.purpose = details.purpose
-            state.answered_questions.add('purpose')
+        state.answered_questions.add('purpose')
         response_parts.append(f"I understand the purpose is: {details.purpose}")
         state_updated = True
         logger.debug(f"Updated purpose: {details.purpose}")
         
     if details.duration and not state.meeting_duration:
         state.meeting_duration = details.duration
-            state.answered_questions.add('duration')
+        state.answered_questions.add('duration')
         response_parts.append(f"Meeting duration set to {details.duration} minutes")
         state_updated = True
         logger.debug(f"Updated duration: {details.duration}")
@@ -429,17 +429,17 @@ def process_message(message):
                     'end': preferred_time + timedelta(minutes=state.meeting_duration or 30)
                 }
             state.answered_questions.add('time')
-                response_parts.append(f"Meeting time set to: {preferred_time.strftime('%A, %B %d at %I:%M %p')}")
-                state_updated = True
-                logger.debug(f"Updated time: {preferred_time}")
+            response_parts.append(f"Meeting time set to: {preferred_time.strftime('%A, %B %d at %I:%M %p')}")
+            state_updated = True
+            logger.debug(f"Updated time: {preferred_time}")
         except ValueError as e:
             logger.error(f"Error parsing date/time: {e}")
         
     if details.attendees:
         new_attendees = [email for email in details.attendees if email not in state.attendees]
-            if new_attendees:
+        if new_attendees:
             state.attendees.update(new_attendees)
-                state.answered_questions.add('attendees')
+            state.answered_questions.add('attendees')
             attendee_list = "\n".join([f"• {attendee}" for attendee in new_attendees])
             response_parts.append(f"Added attendees:\n{attendee_list}")
             state_updated = True
@@ -586,24 +586,24 @@ def main():
             st.session_state.initialized = False
     
     # Check if this is an OAuth callback
-    if 'code' in st.query_params:
-        handle_oauth_callback()
-        return
-    
-    # Check for Google Calendar authorization
-    if not st.session_state.credentials:
-        st.warning("Please authorize access to Google Calendar to continue")
-        authorize_google_calendar()
-        return
-    
-    # Add tabs for text and voice interfaces
-    tab1, tab2 = st.tabs(["Text Chat", "Voice Call"])
-    
-    with tab1:
-        show_chat_interface()
-    
-    with tab2:
-        show_voice_interface()
+        if 'code' in st.query_params:
+            handle_oauth_callback()
+            return
+        
+        # Check for Google Calendar authorization
+        if not st.session_state.credentials:
+            st.warning("Please authorize access to Google Calendar to continue")
+            authorize_google_calendar()
+            return
+        
+        # Add tabs for text and voice interfaces
+        tab1, tab2 = st.tabs(["Text Chat", "Voice Call"])
+        
+        with tab1:
+            show_chat_interface()
+        
+        with tab2:
+            show_voice_interface()
             
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
