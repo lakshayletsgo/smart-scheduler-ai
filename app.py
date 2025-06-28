@@ -26,6 +26,7 @@ from nltk.tokenize import word_tokenize, sent_tokenize
 from nltk.tag import pos_tag
 from nltk.chunk import ne_chunk
 import logging
+import dateparser
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -236,7 +237,10 @@ def extract_meeting_details(text):
             if chunk.label() == 'DATE' or chunk.label() == 'TIME':
                 entity_text = ' '.join([token for token, pos in chunk.leaves()])
                 try:
-                    parsed_date = parser.parse(entity_text)
+                    parsed_date = dateparser.parse(entity_text, settings={
+                        'PREFER_DATES_FROM': 'future',
+                        'RELATIVE_BASE': datetime.now()
+                    })
                     if chunk.label() == 'DATE':
                         details.date = parsed_date.strftime('%Y-%m-%d')
                         logger.debug(f"Extracted date: {details.date}")
@@ -590,7 +594,10 @@ def schedule_meeting():
 
         # Convert date and time to datetime
         try:
-            meeting_datetime = parser.parse(f"{data['date']} {data['time']}")
+            meeting_datetime = dateparser.parse(f"{data['date']} {data['time']}", settings={
+                'PREFER_DATES_FROM': 'future',
+                'RELATIVE_BASE': datetime.now()
+            })
             logger.debug(f"Parsed meeting datetime: {meeting_datetime}")
         except Exception as e:
             logger.error(f"Error parsing datetime: {str(e)}")
