@@ -235,26 +235,64 @@ def extract_meeting_details(text):
 
     # Extract date/time using improved patterns
     try:
-        # Common time expressions
+        # Common time expressions with specific times
         time_patterns = {
             r'tomorrow\s+morning': lambda: (datetime.now() + timedelta(days=1)).replace(hour=9, minute=0),
             r'tomorrow\s+afternoon': lambda: (datetime.now() + timedelta(days=1)).replace(hour=14, minute=0),
             r'tomorrow\s+evening': lambda: (datetime.now() + timedelta(days=1)).replace(hour=17, minute=0),
-            r'next\s+week': lambda: datetime.now() + timedelta(days=7),
-            r'next\s+monday': lambda d: d + timedelta(days=(7 - d.weekday())),
-            r'next\s+tuesday': lambda d: d + timedelta(days=((7 - d.weekday()) + 1) % 7),
-            r'next\s+wednesday': lambda d: d + timedelta(days=((7 - d.weekday()) + 2) % 7),
-            r'next\s+thursday': lambda d: d + timedelta(days=((7 - d.weekday()) + 3) % 7),
-            r'next\s+friday': lambda d: d + timedelta(days=((7 - d.weekday()) + 4) % 7),
+            r'tomorrow\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|AM|PM)?': lambda m: parse_time_with_meridiem(m, tomorrow=True),
+            r'next\s+monday\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|AM|PM)?': lambda m: parse_time_with_meridiem(m, next_weekday=0),
+            r'next\s+tuesday\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|AM|PM)?': lambda m: parse_time_with_meridiem(m, next_weekday=1),
+            r'next\s+wednesday\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|AM|PM)?': lambda m: parse_time_with_meridiem(m, next_weekday=2),
+            r'next\s+thursday\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|AM|PM)?': lambda m: parse_time_with_meridiem(m, next_weekday=3),
+            r'next\s+friday\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|AM|PM)?': lambda m: parse_time_with_meridiem(m, next_weekday=4),
+            r'next\s+monday': lambda: get_next_weekday(0),
+            r'next\s+tuesday': lambda: get_next_weekday(1),
+            r'next\s+wednesday': lambda: get_next_weekday(2),
+            r'next\s+thursday': lambda: get_next_weekday(3),
+            r'next\s+friday': lambda: get_next_weekday(4),
             r'tomorrow': lambda: datetime.now() + timedelta(days=1)
         }
+
+        def parse_time_with_meridiem(match, tomorrow=False, next_weekday=None):
+            hour = int(match.group(1))
+            minute = int(match.group(2)) if match.group(2) else 0
+            meridiem = match.group(3)
+
+            # Adjust hour for PM
+            if meridiem and meridiem.lower() == 'pm' and hour < 12:
+                hour += 12
+            elif not meridiem and hour < 9:  # Default to AM for ambiguous times before 9
+                hour += 12
+
+            base_date = datetime.now()
+            if tomorrow:
+                base_date += timedelta(days=1)
+            elif next_weekday is not None:
+                base_date = get_next_weekday(next_weekday)
+
+            return base_date.replace(hour=hour, minute=minute)
+
+        def get_next_weekday(weekday):
+            today = datetime.now()
+            days_ahead = weekday - today.weekday()
+            if days_ahead <= 0:  # Target day already happened this week
+                days_ahead += 7
+            next_day = today + timedelta(days=days_ahead)
+            return next_day.replace(hour=9, minute=0)  # Default to 9 AM
 
         # First try to match common time expressions
         parsed_date = None
         for pattern, time_func in time_patterns.items():
-            if re.search(pattern, text.lower()):
-                base_date = time_func(datetime.now()) if callable(time_func) else time_func()
-                parsed_date = base_date
+            match = re.search(pattern, text.lower())
+            if match:
+                if callable(time_func):
+                    if len(match.groups()) > 0:
+                        parsed_date = time_func(match)
+                    else:
+                        parsed_date = time_func()
+                else:
+                    parsed_date = time_func
                 break
 
         # If no common expression found, try to find explicit date/time
@@ -565,88 +603,6 @@ def process_message(message):
         initial_greeting = "━━━ Welcome! ━━━\n\n👋 Hello! I'm your AI scheduling assistant.\n\nI'll help you schedule your meeting. Let's get started!\n\nWhat's the purpose of your meeting?"
         return initial_greeting
     
-    # If we're showing slots, handle slot selection
-    if state.current_step == 'showing_slots' and state.available_slots:
-        try:
-            # Try to parse slot selection (1-based index)
-            slot_num = int(message.strip())
-            if 1 <= slot_num <= len(state.available_slots):
-                selected_slot = state.available_slots[slot_num - 1]
-                state.selected_slot = selected_slot
-                state.current_step = 'confirming'
-                
-                # Format confirmation message
-                return (f"Great! I'll schedule the meeting for {selected_slot.strftime('%A, %B %d at %I:%M %p')}.\n\n"
-                       f"Here's a summary of your meeting:\n"
-                       f"📝 Purpose: {state.purpose}\n"
-                       f"⏱️ Duration: {state.meeting_duration} minutes\n"
-                       f"👥 Attendees: {', '.join(state.attendees)}\n\n"
-                       "Should I go ahead and schedule this meeting? (yes/no)")
-            else:
-                return f"Please select a valid slot number between 1 and {len(state.available_slots)}."
-        except ValueError:
-            if message.lower() in ['yes', 'y', 'sure', 'ok', 'okay']:
-                return "Please select a slot first by entering its number."
-            elif message.lower() in ['no', 'n', 'nope']:
-                state.current_step = 'gathering_info'
-                state.slots_shown = False
-                state.available_slots = []
-                if 'time' in state.answered_questions:
-                    state.answered_questions.remove('time')
-                state.preferred_time = None
-                return "Okay, let's try a different time. When would you like to schedule this meeting?"
-            else:
-                return f"Please select a slot by entering its number (1-{len(state.available_slots)})."
-    
-    # If we're in confirming state, handle confirmation
-    if state.current_step == 'confirming':
-        if message.lower() in ['yes', 'y', 'sure', 'ok', 'okay']:
-            # Get calendar credentials
-            creds = st.session_state.credentials
-            if creds:
-                try:
-                    # Create the calendar event
-                    success = calendar_utils.create_calendar_event(
-                        creds,
-                        summary=state.purpose,
-                        start_time=state.selected_slot,
-                        attendees=list(state.attendees),
-                        duration_minutes=state.meeting_duration
-                    )
-                    
-                    if success:
-                        # Reset state for next meeting
-                        response = (f"✅ Perfect! I've scheduled the meeting:\n\n"
-                                  f"📝 Purpose: {state.purpose}\n"
-                                  f"📅 Time: {state.selected_slot.strftime('%A, %B %d at %I:%M %p')}\n"
-                                  f"⏱️ Duration: {state.meeting_duration} minutes\n"
-                                  f"👥 Attendees:\n" + "\n".join([f"• {attendee}" for attendee in state.attendees]) +
-                                  "\n\nI've sent calendar invites to all attendees.")
-                        state.reset()
-                        return response
-                    else:
-                        return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
-                except Exception as e:
-                    logger.error(f"Error creating calendar event: {e}")
-                    return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
-            else:
-                return "Please authorize access to Google Calendar first."
-        elif message.lower() in ['no', 'n', 'nope']:
-            state.current_step = 'showing_slots'
-            state.selected_slot = None
-            if state.available_slots:
-                slots_text = "Here are the available slots again:\n\n"
-                for i, slot in enumerate(state.available_slots, 1):
-                    slots_text += f"{i}. {slot.strftime('%A, %B %d at %I:%M %p')}\n"
-                return slots_text + "\nPlease select a slot by entering its number."
-            else:
-                state.current_step = 'gathering_info'
-                state.slots_shown = False
-                if 'time' in state.answered_questions:
-                    state.answered_questions.remove('time')
-                state.preferred_time = None
-                return "Okay, let's try a different time. When would you like to schedule this meeting?"
-    
     # Extract meeting details from user message
     details = extract_meeting_details(message)
     response_parts = []
@@ -735,6 +691,88 @@ def process_message(message):
                 return "I apologize, but there was an error checking calendar availability. Would you like to try again?"
         else:
             return "Please authorize access to Google Calendar first."
+    
+    # If we're showing slots, handle slot selection
+    if state.current_step == 'showing_slots' and state.available_slots:
+        try:
+            # Try to parse slot selection (1-based index)
+            slot_num = int(message.strip())
+            if 1 <= slot_num <= len(state.available_slots):
+                selected_slot = state.available_slots[slot_num - 1]
+                state.selected_slot = selected_slot
+                state.current_step = 'confirming'
+                
+                # Format confirmation message
+                return (f"Great! I'll schedule the meeting for {selected_slot.strftime('%A, %B %d at %I:%M %p')}.\n\n"
+                       f"Here's a summary of your meeting:\n"
+                       f"📝 Purpose: {state.purpose}\n"
+                       f"⏱️ Duration: {state.meeting_duration} minutes\n"
+                       f"👥 Attendees: {', '.join(state.attendees)}\n\n"
+                       "Should I go ahead and schedule this meeting? (yes/no)")
+            else:
+                return f"Please select a valid slot number between 1 and {len(state.available_slots)}."
+        except ValueError:
+            if message.lower() in ['yes', 'y', 'sure', 'ok', 'okay']:
+                return "Please select a slot first by entering its number."
+            elif message.lower() in ['no', 'n', 'nope']:
+                state.current_step = 'gathering_info'
+                state.slots_shown = False
+                state.available_slots = []
+                if 'time' in state.answered_questions:
+                    state.answered_questions.remove('time')
+                state.preferred_time = None
+                return "Okay, let's try a different time. When would you like to schedule this meeting?"
+            else:
+                return f"Please select a slot by entering its number (1-{len(state.available_slots)})."
+    
+    # If we're in confirming state, handle confirmation
+    if state.current_step == 'confirming':
+        if message.lower() in ['yes', 'y', 'sure', 'ok', 'okay']:
+            # Get calendar credentials
+            creds = st.session_state.credentials
+            if creds:
+                try:
+                    # Create the calendar event
+                    success = calendar_utils.create_calendar_event(
+                        creds,
+                        summary=state.purpose,
+                        start_time=state.selected_slot,
+                        attendees=list(state.attendees),
+                        duration_minutes=state.meeting_duration
+                    )
+                    
+                    if success:
+                        # Reset state for next meeting
+                        response = (f"✅ Perfect! I've scheduled the meeting:\n\n"
+                                  f"📝 Purpose: {state.purpose}\n"
+                                  f"📅 Time: {state.selected_slot.strftime('%A, %B %d at %I:%M %p')}\n"
+                                  f"⏱️ Duration: {state.meeting_duration} minutes\n"
+                                  f"👥 Attendees:\n" + "\n".join([f"• {attendee}" for attendee in state.attendees]) +
+                                  "\n\nI've sent calendar invites to all attendees.")
+                        state.reset()
+                        return response
+                    else:
+                        return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
+                except Exception as e:
+                    logger.error(f"Error creating calendar event: {e}")
+                    return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
+            else:
+                return "Please authorize access to Google Calendar first."
+        elif message.lower() in ['no', 'n', 'nope']:
+            state.current_step = 'showing_slots'
+            state.selected_slot = None
+            if state.available_slots:
+                slots_text = "Here are the available slots again:\n\n"
+                for i, slot in enumerate(state.available_slots, 1):
+                    slots_text += f"{i}. {slot.strftime('%A, %B %d at %I:%M %p')}\n"
+                return slots_text + "\nPlease select a slot by entering its number."
+            else:
+                state.current_step = 'gathering_info'
+                state.slots_shown = False
+                if 'time' in state.answered_questions:
+                    state.answered_questions.remove('time')
+                state.preferred_time = None
+                return "Okay, let's try a different time. When would you like to schedule this meeting?"
     
     # If we updated any state, ask for the next piece of information
     if state_updated:
