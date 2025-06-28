@@ -8,6 +8,7 @@ import pytz
 import logging
 import os
 import pickle
+import json
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -319,22 +320,30 @@ def create_calendar_event(credentials, summary, start_time, attendees, duration_
         Boolean indicating success or failure
     """
     try:
-        service = build_calendar_service(credentials)
+        logger.debug("Starting calendar event creation...")
+        logger.debug(f"Summary: {summary}")
+        logger.debug(f"Start time: {start_time}")
+        logger.debug(f"Duration: {duration_minutes} minutes")
+        logger.debug(f"Attendees: {attendees}")
         
+        service = build_calendar_service(credentials)
+        if not service:
+            logger.error("Failed to build calendar service")
+            return False
+            
         # Get calendar timezone
         calendar_list = service.calendarList().get(calendarId='primary').execute()
         timezone = calendar_list.get('timeZone', 'UTC')
+        logger.debug(f"Calendar timezone: {timezone}")
         
-        # Convert start_time to calendar timezone if needed
+        # Ensure start_time has timezone info
         if start_time.tzinfo is None:
-            local_tz = pytz.timezone(timezone)
-            start_time = local_tz.localize(start_time)
+            start_time = start_time.replace(tzinfo=datetime.now().astimezone().tzinfo)
         
+        # Calculate end time
         end_time = start_time + timedelta(minutes=duration_minutes)
         
-        # Format attendees
-        attendee_list = [{'email': email} for email in attendees]
-        
+        # Create event body
         event = {
             'summary': summary,
             'start': {
@@ -345,22 +354,25 @@ def create_calendar_event(credentials, summary, start_time, attendees, duration_
                 'dateTime': end_time.isoformat(),
                 'timeZone': timezone,
             },
-            'attendees': attendee_list,
+            'attendees': [{'email': email} for email in attendees],
             'reminders': {
                 'useDefault': True
             }
         }
         
-        # Create the event
+        logger.debug("Creating calendar event with body:")
+        logger.debug(json.dumps(event, indent=2, default=str))
+        
+        # Insert the event
         event = service.events().insert(
             calendarId='primary',
             body=event,
-            sendUpdates='all'  # Send email notifications to attendees
+            sendUpdates='all'  # Send emails to attendees
         ).execute()
         
-        logger.debug(f"Event created: {event.get('htmlLink')}")
+        logger.debug(f"Successfully created event: {event.get('htmlLink')}")
         return True
         
     except Exception as e:
-        logger.error(f"Error creating calendar event: {str(e)}")
+        logger.error(f"Error creating calendar event: {e}", exc_info=True)
         return False
