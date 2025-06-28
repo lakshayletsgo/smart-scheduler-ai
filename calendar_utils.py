@@ -135,11 +135,37 @@ class CalendarManager:
             return []
 
 def build_calendar_service(credentials):
+    """Build and return a Google Calendar service object.
+    
+    Args:
+        credentials: Google Calendar credentials
+        
+    Returns:
+        Google Calendar service object
+        
+    Raises:
+        Exception if service creation fails
+    """
     try:
+        logger.debug("Building calendar service...")
+        logger.debug(f"Credentials valid: {credentials.valid}")
+        logger.debug(f"Credentials expired: {credentials.expired}")
+        
         service = build('calendar', 'v3', credentials=credentials)
+        logger.debug("Successfully built calendar service")
+        
+        # Test the service with a simple API call
+        try:
+            calendar_list = service.calendarList().list(maxResults=1).execute()
+            logger.debug("Successfully tested calendar service with API call")
+        except Exception as api_error:
+            logger.error(f"Failed to test calendar service: {str(api_error)}")
+            raise
+            
         return service
     except Exception as e:
         logger.error(f"Error building calendar service: {str(e)}")
+        logger.error("Full traceback:", exc_info=True)
         raise
 
 def find_available_slots(credentials, start_time=None, duration_minutes=30, attendees=None):

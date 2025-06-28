@@ -488,20 +488,43 @@ def initialize_conversation_state():
 
 def get_calendar_credentials():
     """Get valid credentials for Google Calendar API."""
-    creds = st.session_state.credentials
-    
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-                st.session_state.credentials = creds
-            except Exception as e:
-                logger.error(f"Error refreshing credentials: {e}")
-                return None
-        else:
+    try:
+        logger.debug("Getting calendar credentials")
+        creds = st.session_state.credentials
+        
+        if not creds:
+            logger.warning("No credentials found in session state")
             return None
-    
-    return creds
+            
+        logger.debug(f"Credentials found - Valid: {creds.valid}, Expired: {creds.expired}")
+        
+        if not creds.valid:
+            if creds.expired and creds.refresh_token:
+                try:
+                    logger.debug("Attempting to refresh expired credentials")
+                    creds.refresh(Request())
+                    st.session_state.credentials = creds
+                    logger.debug("Successfully refreshed credentials")
+                except Exception as e:
+                    logger.error(f"Error refreshing credentials: {e}", exc_info=True)
+                    return None
+            else:
+                logger.warning("Invalid credentials and cannot refresh")
+                return None
+        
+        # Verify credentials with a test API call
+        try:
+            service = build('calendar', 'v3', credentials=creds)
+            service.calendarList().list(maxResults=1).execute()
+            logger.debug("Successfully verified credentials with test API call")
+            return creds
+        except Exception as e:
+            logger.error(f"Error verifying credentials: {e}", exc_info=True)
+            return None
+            
+    except Exception as e:
+        logger.error(f"Unexpected error in get_calendar_credentials: {e}", exc_info=True)
+        return None
 
 def authorize_google_calendar():
     """Start Google Calendar authorization flow"""
@@ -776,11 +799,22 @@ def process_message(message):
     
     # If we're in confirming state, handle confirmation
     if state.current_step == 'confirming':
+        logger.debug("Processing confirmation response")
+        logger.debug(f"Message: {message}")
+        logger.debug(f"Current state: {state.to_dict()}")
+        
         if message.lower() in ['yes', 'y', 'sure', 'ok', 'okay']:
+            logger.debug("User confirmed scheduling")
             # Get calendar credentials
             creds = st.session_state.credentials
             if creds:
                 try:
+                    logger.debug("Attempting to create calendar event")
+                    logger.debug(f"Purpose: {state.purpose}")
+                    logger.debug(f"Selected slot: {state.selected_slot}")
+                    logger.debug(f"Duration: {state.meeting_duration}")
+                    logger.debug(f"Attendees: {list(state.attendees)}")
+                    
                     # Create the calendar event
                     success = calendar_utils.create_calendar_event(
                         creds,
@@ -790,7 +824,10 @@ def process_message(message):
                         duration_minutes=state.meeting_duration
                     )
                     
+                    logger.debug(f"Calendar event creation result: {success}")
+                    
                     if success:
+                        logger.debug("Successfully created calendar event")
                         # Format success response
                         response = (f"✅ Perfect! I've scheduled the meeting:\n\n"
                                   f"📝 Purpose: {state.purpose}\n"
@@ -801,27 +838,32 @@ def process_message(message):
                                   "Is there anything else I can help you with?")
                         
                         # Reset state completely
+                        logger.debug("Resetting conversation state")
                         state.reset()
                         state.current_step = 'initial'
                         state.slots_shown = False
                         state.selected_slot = None
                         state.available_slots = []
                         
+                        logger.debug("Returning success response")
                         return response
                     else:
+                        logger.warning("Failed to create calendar event")
                         state.current_step = 'gathering_info'
                         state.slots_shown = False
                         state.selected_slot = None
                         return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
                 except Exception as e:
-                    logger.error(f"Error creating calendar event: {e}")
+                    logger.error(f"Error creating calendar event: {e}", exc_info=True)
                     state.current_step = 'gathering_info'
                     state.slots_shown = False
                     state.selected_slot = None
                     return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
             else:
+                logger.warning("No valid credentials found")
                 return "Please authorize access to Google Calendar first."
         elif message.lower() in ['no', 'n', 'nope']:
+            logger.debug("User declined scheduling")
             state.current_step = 'gathering_info'
             state.slots_shown = False
             if 'time' in state.answered_questions:
