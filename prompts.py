@@ -6,6 +6,7 @@ import dateparser
 import os
 import streamlit as st
 import calendar_utils
+import logging
 
 # Initialize Gemini
 genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
@@ -35,11 +36,16 @@ Required information status:
 Previous context:
 {context}"""
 
+logger = logging.getLogger(__name__)
+
 def extract_time_expression(text):
     """Parse natural language time expressions into structured datetime objects."""
     # Try to parse the entire expression first
-    parsed_time = dateparser.parse(text, settings={'PREFER_DATES_FROM': 'future'})
-    if parsed_time:
+    parsed_time = dateparser.parse(text, settings={
+        'PREFER_DATES_FROM': 'future',
+        'RELATIVE_BASE': datetime.now()
+    })
+    if parsed_time and isinstance(parsed_time, datetime):
         return parsed_time
     
     # Handle relative time expressions
@@ -53,7 +59,13 @@ def extract_time_expression(text):
     
     for pattern, time_func in relative_patterns.items():
         if re.search(pattern, text.lower()):
-            return time_func()
+            try:
+                result = time_func()
+                if isinstance(result, datetime):
+                    return result
+            except Exception as e:
+                logger.error(f"Error processing relative time pattern {pattern}: {e}")
+                continue
     
     return None
 
@@ -100,8 +112,19 @@ def format_meeting_details(state):
         sections.append(f"Duration: {state.meeting_duration} minutes")
     
     if state.preferred_time:
-        time_str = state.preferred_time['start'].strftime('%A, %B %d at %I:%M %p')
-        sections.append(f"Preferred time: {time_str}")
+        try:
+            start_time = dateparser.parse(state.preferred_time['start'], settings={
+                'PREFER_DATES_FROM': 'future',
+                'RELATIVE_BASE': datetime.now()
+            })
+            if start_time and isinstance(start_time, datetime):
+                time_str = start_time.strftime('%A, %B %d at %I:%M %p')
+                sections.append(f"Preferred time: {time_str}")
+            else:
+                sections.append("Preferred time: Invalid time format")
+        except Exception as e:
+            logger.error(f"Error formatting preferred time: {e}")
+            sections.append("Preferred time: Error in time format")
     
     if state.attendees:
         sections.append(f"Attendees: {', '.join(state.attendees)}")
@@ -203,36 +226,72 @@ def format_available_slots(slots):
     """Format available time slots in a beautiful way"""
     if not slots:
         return "No available slots found."
-    
-    formatted = [
-        "━━━ Available Time Slots ━━━",
-        ""  # Empty line for spacing
-    ]
-    
+        
+    formatted_slots = ["━━━ Available Slots ━━━\n"]
     for i, slot in enumerate(slots, 1):
-        slot_str = slot.strftime('%A, %B %d at %I:%M %p')
-        formatted.append(f"{i}. {slot_str}")
+        try:
+            if isinstance(slot, str):
+                parsed_slot = dateparser.parse(slot, settings={
+                    'PREFER_DATES_FROM': 'future',
+                    'RELATIVE_BASE': datetime.now()
+                })
+                if parsed_slot and isinstance(parsed_slot, datetime):
+                    slot_str = parsed_slot.strftime('%A, %B %d at %I:%M %p')
+                else:
+                    continue
+            elif isinstance(slot, datetime):
+                slot_str = slot.strftime('%A, %B %d at %I:%M %p')
+            else:
+                continue
+            formatted_slots.append(f"{i}. {slot_str}")
+        except Exception as e:
+            logger.error(f"Error formatting slot {slot}: {e}")
+            continue
     
-    return "\n".join(formatted)
+    if len(formatted_slots) == 1:  # Only has the header
+        return "No valid slots available."
+        
+    formatted_slots.append("\nPlease choose a slot by entering its number.")
+    return "\n".join(formatted_slots)
 
 def format_confirmation(state, slot_time):
-    """Format the confirmation message with proper line breaks"""
-    lines = [
-        "━━━ Meeting Confirmation ━━━<br>",
-        "<br>",
-        "🎉 Perfect! Here's your meeting summary:<br>",
-        "<br>",
-        f"📅 Time: {slot_time}<br>",
-        f"📝 Purpose: {state.purpose}<br>",
-        f"⏱️ Duration: {state.meeting_duration} minutes<br>",
-        f"👥 Attendees: {', '.join(state.attendees)}<br>",
-        "<br>",
-        "━━━ Confirm Scheduling ━━━<br>",
-        "<br>",
-        "Should I go ahead and schedule this meeting? (yes/no)<br>",
-        "<br>"
-    ]
-    return "\n".join(lines)
+    """Format the confirmation message with meeting details"""
+    try:
+        if isinstance(slot_time, str):
+            parsed_time = dateparser.parse(slot_time, settings={
+                'PREFER_DATES_FROM': 'future',
+                'RELATIVE_BASE': datetime.now()
+            })
+            if parsed_time and isinstance(parsed_time, datetime):
+                slot_time = parsed_time
+        
+        if not isinstance(slot_time, datetime):
+            raise ValueError("Invalid slot time format")
+            
+        lines = [
+            "━━━ Confirm Meeting ━━━",
+            "",
+            "Here's a summary of your meeting:",
+            f"📝 Purpose: {state.purpose}",
+            f"⏱️ Duration: {state.meeting_duration} minutes",
+            f"📅 Date: {slot_time.strftime('%A, %B %d')}",
+            f"🕒 Time: {slot_time.strftime('%I:%M %p')}",
+            "👥 Attendees:",
+        ]
+        
+        # Add attendees with bullet points
+        for attendee in state.attendees:
+            lines.append(f"  • {attendee}")
+            
+        lines.extend([
+            "",
+            "Should I go ahead and schedule this meeting? (yes/no)"
+        ])
+        
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Error formatting confirmation: {e}")
+        return "I apologize, but there was an error formatting the meeting details. Would you like to try scheduling again?"
 
 def format_success_message(calendar_link):
     """Format the success message with proper line breaks"""

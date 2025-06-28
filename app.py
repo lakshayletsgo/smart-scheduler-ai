@@ -241,14 +241,19 @@ def extract_meeting_details(text):
                         'PREFER_DATES_FROM': 'future',
                         'RELATIVE_BASE': datetime.now()
                     })
+                    if not parsed_date or not isinstance(parsed_date, datetime):
+                        logger.warning(f"Failed to parse date from: {entity_text}")
+                        continue
+                        
                     if chunk.label() == 'DATE':
                         details.date = parsed_date.strftime('%Y-%m-%d')
                         logger.debug(f"Extracted date: {details.date}")
                     elif chunk.label() == 'TIME':
                         details.time = parsed_date.strftime('%H:%M')
                         logger.debug(f"Extracted time: {details.time}")
-                except:
-                    pass
+                except Exception as e:
+                    logger.error(f"Error parsing date/time: {e}")
+                    continue
 
     # Extract email addresses for attendees
     email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
@@ -598,6 +603,12 @@ def schedule_meeting():
                 'PREFER_DATES_FROM': 'future',
                 'RELATIVE_BASE': datetime.now()
             })
+            if not meeting_datetime or not isinstance(meeting_datetime, datetime):
+                logger.error(f"Failed to parse meeting datetime from: {data['date']} {data['time']}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Invalid date or time format'
+                })
             logger.debug(f"Parsed meeting datetime: {meeting_datetime}")
         except Exception as e:
             logger.error(f"Error parsing datetime: {str(e)}")

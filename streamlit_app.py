@@ -140,14 +140,23 @@ class ConversationState:
     def set_preferred_time(self, start_time, duration_minutes=None):
         """Set the preferred time for the meeting"""
         try:
-            start_time = dateparser.parse(str(start_time), settings={
-                'PREFER_DATES_FROM': 'future',
-                'RELATIVE_BASE': datetime.now()
-            })
-            if duration_minutes:
-                end_time = start_time + timedelta(minutes=duration_minutes)
-            else:
-                end_time = start_time + timedelta(minutes=30)  # default 30 min duration
+            if not isinstance(start_time, datetime):
+                start_time = dateparser.parse(str(start_time), settings={
+                    'PREFER_DATES_FROM': 'future',
+                    'RELATIVE_BASE': datetime.now()
+                })
+                if not start_time or not isinstance(start_time, datetime):
+                    logger.error(f"Failed to parse start_time: {start_time}")
+                    return False
+
+            # Ensure the time is in the future
+            if start_time <= datetime.now():
+                logger.warning("Start time is in the past")
+                return False
+
+            # Use provided duration or default
+            duration = duration_minutes or self.meeting_duration or 30
+            end_time = start_time + timedelta(minutes=duration)
 
             self.preferred_time = {
                 'start': start_time.isoformat(),
@@ -207,28 +216,56 @@ class ConversationState:
         """Load state from dictionary"""
         self.__dict__.update(data)
         if self.preferred_time:
-            start = dateparser.parse(self.preferred_time['start'], settings={
-                'PREFER_DATES_FROM': 'future',
-                'RELATIVE_BASE': datetime.now()
-            })
-            end = dateparser.parse(self.preferred_time['end'], settings={
-                'PREFER_DATES_FROM': 'future',
-                'RELATIVE_BASE': datetime.now()
-            })
-            self.preferred_time = {
-                'start': start.isoformat(),
-                'end': end.isoformat()
-            }
+            try:
+                start = dateparser.parse(self.preferred_time['start'], settings={
+                    'PREFER_DATES_FROM': 'future',
+                    'RELATIVE_BASE': datetime.now()
+                })
+                end = dateparser.parse(self.preferred_time['end'], settings={
+                    'PREFER_DATES_FROM': 'future',
+                    'RELATIVE_BASE': datetime.now()
+                })
+                if not start or not isinstance(start, datetime) or not end or not isinstance(end, datetime):
+                    logger.error("Failed to parse preferred time")
+                    self.preferred_time = None
+                else:
+                    self.preferred_time = {
+                        'start': start.isoformat(),
+                        'end': end.isoformat()
+                    }
+            except Exception as e:
+                logger.error(f"Error parsing preferred time: {e}")
+                self.preferred_time = None
+
         if self.available_slots:
-            self.available_slots = [dateparser.parse(slot, settings={
-                'PREFER_DATES_FROM': 'future',
-                'RELATIVE_BASE': datetime.now()
-            }) for slot in self.available_slots]
+            try:
+                parsed_slots = []
+                for slot in self.available_slots:
+                    parsed_date = dateparser.parse(slot, settings={
+                        'PREFER_DATES_FROM': 'future',
+                        'RELATIVE_BASE': datetime.now()
+                    })
+                    if parsed_date and isinstance(parsed_date, datetime):
+                        parsed_slots.append(parsed_date)
+                self.available_slots = parsed_slots
+            except Exception as e:
+                logger.error(f"Error parsing available slots: {e}")
+                self.available_slots = []
+
         if self.selected_slot:
-            self.selected_slot = dateparser.parse(self.selected_slot, settings={
-                'PREFER_DATES_FROM': 'future',
-                'RELATIVE_BASE': datetime.now()
-            })
+            try:
+                parsed_slot = dateparser.parse(self.selected_slot, settings={
+                    'PREFER_DATES_FROM': 'future',
+                    'RELATIVE_BASE': datetime.now()
+                })
+                if not parsed_slot or not isinstance(parsed_slot, datetime):
+                    logger.error("Failed to parse selected slot")
+                    self.selected_slot = None
+                else:
+                    self.selected_slot = parsed_slot
+            except Exception as e:
+                logger.error(f"Error parsing selected slot: {e}")
+                self.selected_slot = None
 
 class MeetingDetails:
     def __init__(self):
@@ -373,6 +410,9 @@ def extract_meeting_details(text):
                 'PREFER_DAY_OF_MONTH': 'first',
                 'DATE_ORDER': 'DMY'
             })
+            if not parsed_date or not isinstance(parsed_date, datetime):
+                logger.warning(f"Failed to parse date from: {text}")
+                parsed_date = None
 
         if parsed_date:
             # Ensure we're not scheduling in the past
@@ -868,384 +908,6 @@ def process_message(message):
                     return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
             else:
                 logger.warning("No valid credentials found")
-
-def handle_oauth_callback():
-    """Handle the OAuth2 callback from Google"""
-    try:
-        # Get the authorization code and state from URL parameters
-        code = st.query_params.get('code', None)
-        received_state = st.query_params.get('state', None)
-        stored_state = st.session_state.oauth_state
-        
-        # Debug logging
-        logger.debug(f"Received state: {received_state}")
-        logger.debug(f"Stored state: {stored_state}")
-        
-        # Verify state parameter to prevent CSRF
-        if not received_state or not stored_state or received_state != stored_state:
-            st.error("Invalid state parameter. Please try authenticating again.")
-            st.session_state.oauth_state = None
-            st.query_params.clear()
-            return
-        
-        if code:
-            # Create flow instance to handle the callback
-            flow = Flow.from_client_secrets_file(
-                CLIENT_SECRETS_FILE,
-                scopes=SCOPES,
-                redirect_uri=get_oauth_redirect_uri(),
-                state=received_state
-            )
-            
-            try:
-                # Exchange authorization code for credentials
-                flow.fetch_token(code=code)
-                credentials = flow.credentials
-                
-                # Store credentials in session state
-                st.session_state.credentials = credentials
-                
-                # Clear OAuth state after successful authentication
-                st.session_state.oauth_state = None
-                
-                st.success("Successfully authenticated with Google Calendar!")
-                
-                # Clear the query parameters and refresh
-                st.query_params.clear()
-                st.rerun()
-                
-            except Exception as token_error:
-                logger.error(f"Token exchange error: {str(token_error)}")
-                st.error("Failed to exchange authorization code for tokens. Please try again.")
-                st.session_state.oauth_state = None
-                st.query_params.clear()
-                
-        else:
-            st.error("No authorization code received.")
-            st.session_state.oauth_state = None
-            st.query_params.clear()
-            
-    except Exception as e:
-        st.error(f"Error during authentication: {str(e)}")
-        logger.error(f"Authentication error: {str(e)}")
-        st.session_state.oauth_state = None
-        st.query_params.clear()
-
-def show_chat_interface():
-    """Display the chat interface"""
-    # Add custom CSS for chat interface
-    st.markdown("""
-    <style>
-    .chat-header {
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .chat-title {
-        color: #1f2937;
-        font-size: 1.8rem;
-        font-weight: 600;
-        margin-bottom: 0.5rem;
-    }
-    .chat-subtitle {
-        color: #4b5563;
-        font-size: 1.1rem;
-    }
-    .stExpander {
-        border: none !important;
-        box-shadow: none !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    # Chat header
-    st.markdown("""
-    <div class="chat-header">
-        <h1 class="chat-title">AI Meeting Scheduler</h1>
-        <p class="chat-subtitle">Just chat naturally to schedule your meetings</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Add debug expander (hidden by default)
-    with st.expander("Debug Info", expanded=False):
-        state = st.session_state.conversation_state
-        st.write("Current State:")
-        st.write(f"- Purpose: {state.purpose}")
-        st.write(f"- Duration: {state.meeting_duration} minutes")
-        
-        # Display time information
-        if state.preferred_time and state.preferred_time['start']:
-            st.write(f"- Preferred Time: {state.preferred_time['start'].strftime('%A, %B %d at %I:%M %p')}")
-        elif state.selected_slot:
-            st.write(f"- Selected Time: {state.selected_slot.strftime('%A, %B %d at %I:%M %p')}")
-        else:
-            st.write("- Time: Not set")
-            
-        st.write(f"- Attendees: {', '.join(state.attendees) if state.attendees else 'None'}")
-        st.write(f"- Current Step: {state.current_step}")
-        st.write(f"- Answered Questions: {', '.join(state.answered_questions)}")
-        st.write(f"- Slots Shown: {state.slots_shown}")
-        
-        if state.available_slots:
-            st.write("- Available Slots:")
-            for i, slot in enumerate(state.available_slots, 1):
-                if isinstance(slot, datetime):
-                    st.write(f"  {i}. {slot.strftime('%A, %B %d at %I:%M %p')}")
-                else:
-                    st.write(f"  {i}. {slot}")
-    
-    # Display chat history
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-    
-    # Chat input
-    if prompt := st.chat_input("Type your message here..."):
-        # Add user message to chat history
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        
-        # Process user input and get AI response
-        response = process_message(prompt)
-        
-        # Add AI response to chat history
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        
-        # Rerun to update the UI
-        st.rerun()
-
-def process_message(message):
-    """Process user message and return AI response"""
-    # Get the current state from session state
-    state = st.session_state.conversation_state
-    logger.debug(f"Processing message: {message}")
-    logger.debug(f"Current state: {state.to_dict()}")
-    
-    # Handle reset command
-    if message.lower() in ['reset', 'start over', 'restart']:
-        state.reset()
-        st.session_state.messages = []
-        st.session_state.initialized = False
-        initial_greeting = "━━━ Welcome! ━━━\n\n👋 Hello! I'm your AI scheduling assistant.\n\nI'll help you schedule your meeting. Let's get started!\n\nWhat's the purpose of your meeting?"
-        return initial_greeting
-    
-    # Extract meeting details from user message
-    details = extract_meeting_details(message)
-    response_parts = []
-    state_updated = False
-    
-    # Update state with extracted information
-    if details.purpose and not state.purpose:
-        state.purpose = details.purpose
-        state.answered_questions.add('purpose')
-        response_parts.append(f"I understand the purpose is: {details.purpose}")
-        state_updated = True
-        logger.debug(f"Updated purpose: {details.purpose}")
-        
-    if details.duration and not state.meeting_duration:
-        state.meeting_duration = details.duration
-        state.answered_questions.add('duration')
-        response_parts.append(f"Meeting duration set to {details.duration} minutes")
-        state_updated = True
-        logger.debug(f"Updated duration: {details.duration}")
-    
-    # Handle time extraction
-    if details.date and details.time:
-        try:
-            # Combine date and time
-            date_str = f"{details.date} {details.time}"
-            if state.set_preferred_time(date_str):
-                state.answered_questions.add('time')
-                formatted_time = state.preferred_time['start'].strftime('%A, %B %d at %I:%M %p')
-                response_parts.append(f"Meeting time set to: {formatted_time}")
-                state_updated = True
-                logger.debug(f"Updated time: {state.preferred_time}")
-            else:
-                # If the time is invalid (past), ask for a future time
-                response_parts.append("Please provide a future date and time for the meeting.")
-                if 'time' in state.answered_questions:
-                    state.answered_questions.remove('time')
-                state.preferred_time = None
-        except Exception as e:
-            logger.error(f"Error parsing date/time: {e}")
-            response_parts.append("I couldn't understand the date and time. Please provide them in a clearer format.")
-            if 'time' in state.answered_questions:
-                state.answered_questions.remove('time')
-            state.preferred_time = None
-    
-    if details.attendees:
-        new_attendees = [email for email in details.attendees if email not in state.attendees]
-        if new_attendees:
-            state.attendees.update(new_attendees)
-            state.answered_questions.add('attendees')
-            attendee_list = "\n".join([f"• {attendee}" for attendee in new_attendees])
-            response_parts.append(f"Added attendees:\n{attendee_list}")
-            state_updated = True
-            logger.debug(f"Updated attendees: {new_attendees}")
-        
-    # Log current state for debugging
-    logger.debug(f"Updated state: {state.to_dict()}")
-    
-    # If we have all required information and haven't shown slots yet
-    if state.is_complete() and not state.slots_shown:
-        # Get calendar credentials
-        creds = st.session_state.credentials
-        if creds:
-            try:
-            # Get available slots from calendar
-                available_slots = calendar_utils.find_available_slots(
-                creds,
-                start_time=state.preferred_time['start'] if state.preferred_time else None,
-                    duration_minutes=state.meeting_duration,
-                    attendees=list(state.attendees)
-                )
-                
-                if available_slots:
-                    # Automatically select the first available slot
-                    selected_slot = available_slots[0]
-                    state.selected_slot = selected_slot
-                    state.current_step = 'confirming'
-                    
-                    # Format confirmation message
-                    return (f"I found an available slot for your meeting: {selected_slot.strftime('%A, %B %d at %I:%M %p')}.\n\n"
-                           f"Here's a summary of your meeting:\n"
-                           f"📝 Purpose: {state.purpose}\n"
-                           f"⏱️ Duration: {state.meeting_duration} minutes\n"
-                           f"👥 Attendees: {', '.join(state.attendees)}\n\n"
-                           "Should I go ahead and schedule this meeting? (yes/no)")
-                else:
-                    return "I couldn't find any available slots in the next week. Would you like to try a different time?"
-            except Exception as e:
-                logger.error(f"Error finding available slots: {e}")
-                return "I apologize, but there was an error checking calendar availability. Would you like to try again?"
-        else:
-            return "Please authorize access to Google Calendar first."
-    
-    # If we're in confirming state, handle confirmation
-    if state.current_step == 'confirming':
-        logger.debug("Processing confirmation response")
-        logger.debug(f"Message: {message}")
-        logger.debug(f"Current state: {state.to_dict()}")
-        
-        if message.lower() in ['yes', 'y', 'sure', 'ok', 'okay']:
-            logger.debug("User confirmed scheduling")
-            # Get calendar credentials
-            creds = st.session_state.credentials
-            if creds:
-                try:
-                    # Ensure selected_slot is a datetime object
-                    if isinstance(state.selected_slot, str):
-                        try:
-                            state.selected_slot = dateparser.parse(state.selected_slot)
-                        except Exception as e:
-                            logger.error(f"Error parsing selected_slot: {e}")
-                            return "I apologize, but there was an error with the selected time. Let's try scheduling again."
-                    
-                    if not isinstance(state.selected_slot, datetime):
-                        logger.error("Selected slot is not a valid datetime object")
-                        return "I apologize, but there was an error with the selected time. Let's try scheduling again."
-                    
-                    logger.debug("Attempting to create calendar event")
-                    logger.debug(f"Purpose: {state.purpose}")
-                    logger.debug(f"Selected slot: {state.selected_slot}")
-                    logger.debug(f"Duration: {state.meeting_duration}")
-                    logger.debug(f"Attendees: {list(state.attendees)}")
-                    
-                    # Create the calendar event
-                    success = calendar_utils.create_calendar_event(
-                        creds,
-                        summary=state.purpose,
-                        start_time=state.selected_slot,
-                        attendees=list(state.attendees),
-                        duration_minutes=state.meeting_duration
-                    )
-                    
-                    logger.debug(f"Calendar event creation result: {success}")
-                    
-                    if success:
-                        logger.debug("Successfully created calendar event")
-                        # Format success response
-                        response = (f"✅ Perfect! I've scheduled the meeting:\n\n"
-                                  f"📝 Purpose: {state.purpose}\n"
-                                  f"📅 Time: {state.selected_slot.strftime('%A, %B %d at %I:%M %p')}\n"
-                                  f"⏱️ Duration: {state.meeting_duration} minutes\n"
-                                  f"👥 Attendees:\n" + "\n".join([f"• {attendee}" for attendee in state.attendees]) +
-                                  "\n\nI've sent calendar invites to all attendees.\n\n"
-                                  "Is there anything else I can help you with?")
-                        
-                        # Reset state completely
-                        logger.debug("Resetting conversation state")
-                        state.reset()
-                        state.current_step = 'initial'
-                        state.slots_shown = False
-                        state.selected_slot = None
-                        state.available_slots = []
-                        
-                        logger.debug("Returning success response")
-                        return response
-                    else:
-                        logger.warning("Failed to create calendar event")
-                        state.current_step = 'gathering_info'
-                        state.slots_shown = False
-                        state.selected_slot = None
-                        return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
-                except Exception as e:
-                    logger.error(f"Error creating calendar event: {e}", exc_info=True)
-                    state.current_step = 'gathering_info'
-                    state.slots_shown = False
-                    state.selected_slot = None
-                    return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
-            else:
-                logger.warning("No valid credentials found")
-                return "Please authorize access to Google Calendar first."
-        elif message.lower() in ['no', 'n', 'nope']:
-            logger.debug("User declined scheduling")
-            state.current_step = 'gathering_info'
-            state.slots_shown = False
-            if 'time' in state.answered_questions:
-                state.answered_questions.remove('time')
-            state.preferred_time = None
-            state.selected_slot = None  # Clear the selected slot
-            return "Okay, let's try a different time. When would you like to schedule this meeting?"
-    
-    # If we updated any state, ask for the next piece of information
-    if state_updated:
-        next_question = state.get_next_question()
-        if next_question:
-            if response_parts:
-                response_parts.append("")  # Add a blank line
-            if next_question == 'purpose':
-                response_parts.append("What's the purpose of your meeting?")
-            elif next_question == 'duration':
-                response_parts.append("How long would you like the meeting to be? (default is 30 minutes)")
-            elif next_question == 'time':
-                response_parts.append("When would you like to schedule this meeting? You can say things like:\n" +
-                                   "• 'tomorrow morning'\n" +
-                                   "• 'next Monday at 2pm'\n" +
-                                   "• 'June 28 at 10am'")
-            elif next_question == 'attendees':
-                response_parts.append("Who would you like to invite to this meeting? (Please provide email addresses)")
-        return "\n".join(response_parts)
-    
-    # If no state was updated but we're missing information, ask for it
-    next_question = state.get_next_question()
-    if next_question:
-        if next_question == 'purpose':
-            return "What's the purpose of your meeting?"
-        elif next_question == 'duration':
-            return "How long would you like the meeting to be? (default is 30 minutes)"
-        elif next_question == 'time':
-            return "When would you like to schedule this meeting? You can say things like:\n" + \
-                   "• 'tomorrow morning'\n" + \
-                   "• 'next Monday at 2pm'\n" + \
-                   "• 'June 28 at 10am'"
-        elif next_question == 'attendees':
-            return "Who would you like to invite to this meeting? (Please provide email addresses)"
-    
-    # If we get here, we couldn't understand the input
-    return "I'm not sure what information you're providing. Could you please be more specific? Here's what I have so far:\n\n" + \
-           (f"📝 Purpose: {state.purpose}\n" if state.purpose else "") + \
-           (f"🕒 Duration: {state.meeting_duration} minutes\n" if state.meeting_duration else "") + \
-           (f"📅 Time: {state.preferred_time['start'].strftime('%A, %B %d at %I:%M %p')}\n" if state.preferred_time else "") + \
-           (f"📧 Attendees: {', '.join(state.attendees)}\n" if state.attendees else "")
 
 def show_voice_interface():
     """Display the voice interface"""
