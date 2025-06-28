@@ -791,22 +791,33 @@ def process_message(message):
                     )
                     
                     if success:
-                        # Reset state for next meeting
+                        # Format success response
                         response = (f"✅ Perfect! I've scheduled the meeting:\n\n"
                                   f"📝 Purpose: {state.purpose}\n"
                                   f"📅 Time: {state.selected_slot.strftime('%A, %B %d at %I:%M %p')}\n"
                                   f"⏱️ Duration: {state.meeting_duration} minutes\n"
                                   f"👥 Attendees:\n" + "\n".join([f"• {attendee}" for attendee in state.attendees]) +
-                                  "\n\nI've sent calendar invites to all attendees.")
-                        # Reset state after successful scheduling
+                                  "\n\nI've sent calendar invites to all attendees.\n\n"
+                                  "Is there anything else I can help you with?")
+                        
+                        # Reset state completely
                         state.reset()
-                        # Reset conversation state to initial
                         state.current_step = 'initial'
+                        state.slots_shown = False
+                        state.selected_slot = None
+                        state.available_slots = []
+                        
                         return response
                     else:
+                        state.current_step = 'gathering_info'
+                        state.slots_shown = False
+                        state.selected_slot = None
                         return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
                 except Exception as e:
                     logger.error(f"Error creating calendar event: {e}")
+                    state.current_step = 'gathering_info'
+                    state.slots_shown = False
+                    state.selected_slot = None
                     return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
             else:
                 return "Please authorize access to Google Calendar first."

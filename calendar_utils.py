@@ -290,7 +290,7 @@ def create_calendar_event(credentials, summary, start_time, attendees, duration_
         duration_minutes: Duration of meeting in minutes (default 30)
     
     Returns:
-        Created event object or None if there was an error
+        Boolean indicating success or failure
     """
     try:
         service = build_calendar_service(credentials)
@@ -325,25 +325,6 @@ def create_calendar_event(credentials, summary, start_time, attendees, duration_
             }
         }
         
-        # Check if the time slot is available
-        query_items = [{"id": "primary"}]
-        for email in attendees:
-            query_items.append({"id": email})
-            
-        busy_result = service.freebusy().query(
-            body={
-                "timeMin": start_time.isoformat(),
-                "timeMax": end_time.isoformat(),
-                "items": query_items
-            }
-        ).execute()
-        
-        # Check if anyone is busy
-        for calendar_id, calendar_info in busy_result.get('calendars', {}).items():
-            if calendar_info.get('busy', []):
-                logger.warning(f"Time slot is busy for {calendar_id}")
-                return None
-        
         # Create the event
         event = service.events().insert(
             calendarId='primary',
@@ -352,8 +333,8 @@ def create_calendar_event(credentials, summary, start_time, attendees, duration_
         ).execute()
         
         logger.debug(f"Event created: {event.get('htmlLink')}")
-        return event
+        return True
         
     except Exception as e:
         logger.error(f"Error creating calendar event: {str(e)}")
-        return None
+        return False
