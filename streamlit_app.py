@@ -588,11 +588,40 @@ def handle_oauth_callback():
 
 def show_chat_interface():
     """Display the chat interface"""
-    st.title("AI Meeting Scheduler")
-    st.write("Chat with the AI to schedule your meeting")
+    # Add custom CSS for chat interface
+    st.markdown("""
+    <style>
+    .chat-header {
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .chat-title {
+        color: #1f2937;
+        font-size: 1.8rem;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+    }
+    .chat-subtitle {
+        color: #4b5563;
+        font-size: 1.1rem;
+    }
+    .stExpander {
+        border: none !important;
+        box-shadow: none !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Chat header
+    st.markdown("""
+    <div class="chat-header">
+        <h1 class="chat-title">AI Meeting Scheduler</h1>
+        <p class="chat-subtitle">Just chat naturally to schedule your meetings</p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    # Add debug expander
-    with st.expander("Debug Info"):
+    # Add debug expander (hidden by default)
+    with st.expander("Debug Info", expanded=False):
         state = st.session_state.conversation_state
         st.write("Current State:")
         st.write(f"- Purpose: {state.purpose}")
@@ -916,25 +945,127 @@ async def end_voice_call():
 
 def main():
     try:
+        # Add custom CSS
+        st.markdown("""
+        <style>
+        .auth-container {
+            background-color: white;
+            padding: 2rem;
+            border-radius: 1rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin: 2rem auto;
+            max-width: 600px;
+            text-align: center;
+        }
+        .auth-title {
+            color: #1f2937;
+            font-size: 1.8rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+        .auth-description {
+            color: #4b5563;
+            font-size: 1.1rem;
+            margin-bottom: 2rem;
+            line-height: 1.6;
+        }
+        .auth-features {
+            text-align: left;
+            margin: 1.5rem 0;
+            padding: 1rem;
+            background-color: #f3f4f6;
+            border-radius: 0.5rem;
+        }
+        .feature-item {
+            display: flex;
+            align-items: center;
+            margin: 0.75rem 0;
+            color: #374151;
+        }
+        .feature-emoji {
+            margin-right: 0.75rem;
+            font-size: 1.2rem;
+        }
+        .auth-button {
+            display: inline-block;
+            background-color: #2563eb;
+            color: white;
+            padding: 0.75rem 2rem;
+            border-radius: 0.5rem;
+            text-decoration: none;
+            font-weight: 500;
+            margin-top: 1rem;
+            transition: all 0.2s ease;
+        }
+        .auth-button:hover {
+            background-color: #1d4ed8;
+            transform: translateY(-1px);
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
         # Health check endpoint
         if "healthz" in st.query_params:
             st.success("App is healthy")
             return
 
-    # Initialize conversation state if needed
+        # Initialize conversation state if needed
         if 'conversation_state' not in st.session_state:
             st.session_state.conversation_state = ConversationState()
             st.session_state.initialized = False
     
-    # Check if this is an OAuth callback
+        # Check if this is an OAuth callback
         if 'code' in st.query_params:
             handle_oauth_callback()
             return
         
         # Check for Google Calendar authorization
         if not st.session_state.credentials:
-            st.warning("Please authorize access to Google Calendar to continue")
-            authorize_google_calendar()
+            st.markdown("""
+            <div class="auth-container">
+                <h1 class="auth-title">Welcome to AI Meeting Scheduler</h1>
+                <p class="auth-description">Your intelligent assistant for effortless meeting scheduling. Connect your Google Calendar to get started.</p>
+                
+                <div class="auth-features">
+                    <div class="feature-item">
+                        <span class="feature-emoji">🤖</span>
+                        <span>Natural language understanding - just chat like you would with a human</span>
+                    </div>
+                    <div class="feature-item">
+                        <span class="feature-emoji">📅</span>
+                        <span>Automatic calendar availability check</span>
+                    </div>
+                    <div class="feature-item">
+                        <span class="feature-emoji">✨</span>
+                        <span>Smart scheduling with conflict resolution</span>
+                    </div>
+                    <div class="feature-item">
+                        <span class="feature-emoji">📧</span>
+                        <span>Automatic calendar invites to attendees</span>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Get authorization URL
+            flow = Flow.from_client_secrets_file(
+                CLIENT_SECRETS_FILE,
+                scopes=SCOPES,
+                redirect_uri=get_oauth_redirect_uri()
+            )
+            
+            # Generate a secure state parameter
+            state = os.urandom(16).hex()
+            st.session_state.oauth_state = state
+            
+            authorization_url, _ = flow.authorization_url(
+                access_type='offline',
+                include_granted_scopes='true',
+                state=state,
+                prompt='consent'
+            )
+            
+            st.markdown(f'<a href="{authorization_url}" class="auth-button">Connect Google Calendar</a>', unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
             return
         
         # Add tabs for text and voice interfaces
