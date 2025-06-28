@@ -588,40 +588,11 @@ def handle_oauth_callback():
 
 def show_chat_interface():
     """Display the chat interface"""
-    # Add custom CSS for chat interface
-    st.markdown("""
-    <style>
-    .chat-header {
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .chat-title {
-        color: #1f2937;
-        font-size: 1.8rem;
-        font-weight: 600;
-        margin-bottom: 0.5rem;
-    }
-    .chat-subtitle {
-        color: #4b5563;
-        font-size: 1.1rem;
-    }
-    .stExpander {
-        border: none !important;
-        box-shadow: none !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    # Chat header
-    st.markdown("""
-    <div class="chat-header">
-        <h1 class="chat-title">AI Meeting Scheduler</h1>
-        <p class="chat-subtitle">Just chat naturally to schedule your meetings</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.title("AI Meeting Scheduler")
+    st.write("Chat with the AI to schedule your meeting")
     
-    # Add debug expander (hidden by default)
-    with st.expander("Debug Info", expanded=False):
+    # Add debug expander
+    with st.expander("Debug Info"):
         state = st.session_state.conversation_state
         st.write("Current State:")
         st.write(f"- Purpose: {state.purpose}")
@@ -754,18 +725,15 @@ def process_message(message):
                 )
                 
                 if available_slots:
-                    # Automatically select the first available slot
-                    selected_slot = available_slots[0]
-                    state.selected_slot = selected_slot
-                    state.current_step = 'confirming'
+                    state.available_slots = available_slots
+                    state.slots_shown = True
+                    state.current_step = 'showing_slots'
                     
-                    # Format confirmation message
-                    return (f"I found an available slot for your meeting: {selected_slot.strftime('%A, %B %d at %I:%M %p')}.\n\n"
-                           f"Here's a summary of your meeting:\n"
-                           f"📝 Purpose: {state.purpose}\n"
-                           f"⏱️ Duration: {state.meeting_duration} minutes\n"
-                           f"👥 Attendees: {', '.join(state.attendees)}\n\n"
-                           "Should I go ahead and schedule this meeting? (yes/no)")
+                    # Format available slots
+                    slots_text = "Here are the available slots:\n\n"
+                    for i, slot in enumerate(available_slots, 1):
+                        slots_text += f"{i}. {slot.strftime('%A, %B %d at %I:%M %p')}\n"
+                    return slots_text + "\nPlease select a slot by entering its number."
                 else:
                     return "I couldn't find any available slots in the next week. Would you like to try a different time?"
             except Exception as e:
@@ -773,6 +741,39 @@ def process_message(message):
                 return "I apologize, but there was an error checking calendar availability. Would you like to try again?"
         else:
             return "Please authorize access to Google Calendar first."
+    
+    # If we're showing slots, handle slot selection
+    if state.current_step == 'showing_slots' and state.available_slots:
+        try:
+            # Try to parse slot selection (1-based index)
+            slot_num = int(message.strip())
+            if 1 <= slot_num <= len(state.available_slots):
+                selected_slot = state.available_slots[slot_num - 1]
+                state.selected_slot = selected_slot
+                state.current_step = 'confirming'
+                
+                # Format confirmation message
+                return (f"Great! I'll schedule the meeting for {selected_slot.strftime('%A, %B %d at %I:%M %p')}.\n\n"
+                       f"Here's a summary of your meeting:\n"
+                       f"📝 Purpose: {state.purpose}\n"
+                       f"⏱️ Duration: {state.meeting_duration} minutes\n"
+                       f"👥 Attendees: {', '.join(state.attendees)}\n\n"
+                       "Should I go ahead and schedule this meeting? (yes/no)")
+            else:
+                return f"Please select a valid slot number between 1 and {len(state.available_slots)}."
+        except ValueError:
+            if message.lower() in ['yes', 'y', 'sure', 'ok', 'okay']:
+                return "Please select a slot first by entering its number."
+            elif message.lower() in ['no', 'n', 'nope']:
+                state.current_step = 'gathering_info'
+                state.slots_shown = False
+                state.available_slots = []
+                if 'time' in state.answered_questions:
+                    state.answered_questions.remove('time')
+                state.preferred_time = None
+                return "Okay, let's try a different time. When would you like to schedule this meeting?"
+            else:
+                return f"Please select a slot by entering its number (1-{len(state.available_slots)})."
     
     # If we're in confirming state, handle confirmation
     if state.current_step == 'confirming':
@@ -808,12 +809,20 @@ def process_message(message):
             else:
                 return "Please authorize access to Google Calendar first."
         elif message.lower() in ['no', 'n', 'nope']:
-            state.current_step = 'gathering_info'
-            state.slots_shown = False
-            if 'time' in state.answered_questions:
-                state.answered_questions.remove('time')
-            state.preferred_time = None
-            return "Okay, let's try a different time. When would you like to schedule this meeting?"
+            state.current_step = 'showing_slots'
+            state.selected_slot = None
+            if state.available_slots:
+                slots_text = "Here are the available slots again:\n\n"
+                for i, slot in enumerate(state.available_slots, 1):
+                    slots_text += f"{i}. {slot.strftime('%A, %B %d at %I:%M %p')}\n"
+                return slots_text + "\nPlease select a slot by entering its number."
+            else:
+                state.current_step = 'gathering_info'
+                state.slots_shown = False
+                if 'time' in state.answered_questions:
+                    state.answered_questions.remove('time')
+                state.preferred_time = None
+                return "Okay, let's try a different time. When would you like to schedule this meeting?"
     
     # If we updated any state, ask for the next piece of information
     if state_updated:
@@ -907,114 +916,25 @@ async def end_voice_call():
 
 def main():
     try:
-        # Add custom CSS
-        st.markdown("""
-            <style>
-            .auth-container {
-                background-color: white;
-                padding: 2rem;
-                border-radius: 1rem;
-                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-                margin: 2rem auto;
-                max-width: 600px;
-                text-align: center;
-            }
-            .auth-title {
-                color: #1f2937;
-                font-size: 1.8rem;
-                font-weight: 600;
-                margin-bottom: 1rem;
-            }
-            .auth-description {
-                color: #4b5563;
-                font-size: 1.1rem;
-                margin-bottom: 2rem;
-                line-height: 1.6;
-            }
-            .auth-button {
-                display: inline-block;
-                background-color: #2563eb;
-                color: white !important;
-                padding: 0.75rem 2rem;
-                border-radius: 0.5rem;
-                text-decoration: none;
-                font-weight: 500;
-                margin-top: 1rem;
-                transition: all 0.2s ease;
-                border: none;
-                cursor: pointer;
-            }
-            .auth-button:hover {
-                background-color: #1d4ed8;
-                transform: translateY(-1px);
-                text-decoration: none;
-            }
-            .auth-button:visited {
-                color: white !important;
-            }
-            </style>
-        """, unsafe_allow_html=True)
-
         # Health check endpoint
         if "healthz" in st.query_params:
             st.success("App is healthy")
             return
 
-        # Initialize conversation state if needed
+    # Initialize conversation state if needed
         if 'conversation_state' not in st.session_state:
             st.session_state.conversation_state = ConversationState()
             st.session_state.initialized = False
     
-        # Check if this is an OAuth callback
+    # Check if this is an OAuth callback
         if 'code' in st.query_params:
             handle_oauth_callback()
             return
         
         # Check for Google Calendar authorization
         if not st.session_state.credentials:
-            st.markdown('<div class="auth-container">', unsafe_allow_html=True)
-            st.markdown('<h1 class="auth-title">Welcome to AI Meeting Scheduler</h1>', unsafe_allow_html=True)
-            st.markdown('<p class="auth-description">Your intelligent assistant for effortless meeting scheduling. Connect your Google Calendar to get started.</p>', unsafe_allow_html=True)
-            
-            # Features section using Streamlit components
-            st.write("")  # Add some spacing
-            st.markdown("#### Key Features")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("🤖 **Natural Language**")
-                st.write("Just chat like you would with a human")
-                
-                st.markdown("✨ **Smart Scheduling**")
-                st.write("Automatic conflict resolution")
-                
-            with col2:
-                st.markdown("📅 **Calendar Integration**")
-                st.write("Automatic availability check")
-                
-                st.markdown("📧 **Automated Invites**")
-                st.write("Calendar invites sent automatically")
-            
-            # Get authorization URL
-            flow = Flow.from_client_secrets_file(
-                CLIENT_SECRETS_FILE,
-                scopes=SCOPES,
-                redirect_uri=get_oauth_redirect_uri()
-            )
-            
-            # Generate a secure state parameter
-            state = os.urandom(16).hex()
-            st.session_state.oauth_state = state
-            
-            authorization_url, _ = flow.authorization_url(
-                access_type='offline',
-                include_granted_scopes='true',
-                state=state,
-                prompt='consent'
-            )
-            
-            st.markdown(f'<a href="{authorization_url}" class="auth-button">Connect Google Calendar</a>', unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.warning("Please authorize access to Google Calendar to continue")
+            authorize_google_calendar()
             return
         
         # Add tabs for text and voice interfaces
