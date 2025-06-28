@@ -1025,7 +1025,7 @@ def main():
         
         with tab2:
             show_voice_interface()
-                    
+                
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
         logger.error(f"Application error: {str(e)}", exc_info=True)
