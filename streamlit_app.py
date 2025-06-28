@@ -17,26 +17,10 @@ import logging
 from voice_bot import VoiceBot
 import asyncio
 import sys
-import nltk
-from nltk.tokenize import word_tokenize, sent_tokenize
-from nltk.tag import pos_tag
-from nltk.chunk import ne_chunk
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
-# Download required NLTK data
-try:
-    nltk.data.find('tokenizers/punkt')
-    nltk.data.find('taggers/averaged_perceptron_tagger')
-    nltk.data.find('chunkers/maxent_ne_chunker')
-    nltk.data.find('corpora/words')
-except LookupError:
-    nltk.download('punkt')
-    nltk.download('averaged_perceptron_tagger')
-    nltk.download('maxent_ne_chunker')
-    nltk.download('words')
 
 # Load environment variables
 load_dotenv()
@@ -60,6 +44,72 @@ if os.getenv('GOOGLE_CLOUD_PROJECT'):
 CLIENT_SECRETS_FILE = os.path.join(os.path.dirname(__file__), 'client_secrets.json')
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly',
           'https://www.googleapis.com/auth/calendar.events']
+
+# Simple text tokenizer as fallback
+def simple_tokenize(text):
+    """Simple tokenizer as fallback if NLTK is not available"""
+    # Split on common punctuation and whitespace
+    tokens = re.findall(r'\b\w+\b|[.,!?;]', text)
+    return tokens
+
+def simple_sentence_tokenize(text):
+    """Simple sentence tokenizer as fallback if NLTK is not available"""
+    # Split on common sentence endings
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    return sentences
+
+# Try to use NLTK, fall back to simple tokenizers if not available
+try:
+    import nltk
+    # Set NLTK data path to a writable location
+    nltk.data.path.append(os.path.join(os.path.expanduser("~"), "nltk_data"))
+    
+    try:
+        # Try to load NLTK data
+        nltk.data.find('tokenizers/punkt')
+        nltk.data.find('taggers/averaged_perceptron_tagger')
+        nltk.data.find('chunkers/maxent_ne_chunker')
+        nltk.data.find('corpora/words')
+        
+        # If successful, use NLTK functions
+        word_tokenize = nltk.word_tokenize
+        sent_tokenize = nltk.sent_tokenize
+        pos_tag = nltk.pos_tag
+        ne_chunk = nltk.ne_chunk
+        
+    except LookupError:
+        try:
+            # Try to download NLTK data
+            nltk.download('punkt', quiet=True)
+            nltk.download('averaged_perceptron_tagger', quiet=True)
+            nltk.download('maxent_ne_chunker', quiet=True)
+            nltk.download('words', quiet=True)
+            
+            # If download successful, use NLTK functions
+            word_tokenize = nltk.word_tokenize
+            sent_tokenize = nltk.sent_tokenize
+            pos_tag = nltk.pos_tag
+            ne_chunk = nltk.ne_chunk
+            
+        except Exception as e:
+            logger.warning(f"Could not download NLTK data: {e}. Using simple tokenizers.")
+            # Fall back to simple tokenizers
+            word_tokenize = simple_tokenize
+            sent_tokenize = simple_sentence_tokenize
+            def simple_pos_tag(tokens):
+                return [(token, 'NN') for token in tokens]  # Treat all words as nouns
+            pos_tag = simple_pos_tag
+            ne_chunk = lambda x: x  # No-op for named entity chunking
+            
+except ImportError:
+    logger.warning("NLTK not available. Using simple tokenizers.")
+    # Fall back to simple tokenizers
+    word_tokenize = simple_tokenize
+    sent_tokenize = simple_sentence_tokenize
+    def simple_pos_tag(tokens):
+        return [(token, 'NN') for token in tokens]  # Treat all words as nouns
+    pos_tag = simple_pos_tag
+    ne_chunk = lambda x: x  # No-op for named entity chunking
 
 # Get the deployment URL from Streamlit's environment or use localhost as fallback
 def get_oauth_redirect_uri():
