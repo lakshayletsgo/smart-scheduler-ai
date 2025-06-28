@@ -931,23 +931,6 @@ def main():
                 margin-bottom: 2rem;
                 line-height: 1.6;
             }
-            .auth-features {
-                text-align: left;
-                margin: 1.5rem 0;
-                padding: 1rem;
-                background-color: #f3f4f6;
-                border-radius: 0.5rem;
-            }
-            .feature-item {
-                display: flex;
-                align-items: center;
-                margin: 0.75rem 0;
-                color: #374151;
-            }
-            .feature-emoji {
-                margin-right: 0.75rem;
-                font-size: 1.2rem;
-            }
             .auth-button {
                 display: inline-block;
                 background-color: #2563eb;
@@ -989,31 +972,28 @@ def main():
         
         # Check for Google Calendar authorization
         if not st.session_state.credentials:
-            st.markdown("""
-                <div class="auth-container">
-                    <h1 class="auth-title">Welcome to AI Meeting Scheduler</h1>
-                    <p class="auth-description">Your intelligent assistant for effortless meeting scheduling. Connect your Google Calendar to get started.</p>
-                    
-                    <div class="auth-features">
-                        <div class="feature-item">
-                            <span class="feature-emoji">🤖</span>
-                            Natural language understanding - just chat like you would with a human
-                        </div>
-                        <div class="feature-item">
-                            <span class="feature-emoji">📅</span>
-                            Automatic calendar availability check
-                        </div>
-                        <div class="feature-item">
-                            <span class="feature-emoji">✨</span>
-                            Smart scheduling with conflict resolution
-                        </div>
-                        <div class="feature-item">
-                            <span class="feature-emoji">📧</span>
-                            Automatic calendar invites to attendees
-                        </div>
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
+            st.markdown('<div class="auth-container">', unsafe_allow_html=True)
+            st.markdown('<h1 class="auth-title">Welcome to AI Meeting Scheduler</h1>', unsafe_allow_html=True)
+            st.markdown('<p class="auth-description">Your intelligent assistant for effortless meeting scheduling. Connect your Google Calendar to get started.</p>', unsafe_allow_html=True)
+            
+            # Features section using Streamlit components
+            st.write("")  # Add some spacing
+            st.markdown("#### Key Features")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("🤖 **Natural Language**")
+                st.write("Just chat like you would with a human")
+                
+                st.markdown("✨ **Smart Scheduling**")
+                st.write("Automatic conflict resolution")
+                
+            with col2:
+                st.markdown("📅 **Calendar Integration**")
+                st.write("Automatic availability check")
+                
+                st.markdown("📧 **Automated Invites**")
+                st.write("Calendar invites sent automatically")
             
             # Get authorization URL
             flow = Flow.from_client_secrets_file(
