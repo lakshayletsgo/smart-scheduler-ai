@@ -299,7 +299,7 @@ def process_message(message):
         response_parts.append(f"📝 Purpose: {details.purpose}")
         state_updated = True
         logger.debug(f"Updated purpose: {details.purpose}")
-    
+        
     if details.duration and not state.meeting_duration:
         state.meeting_duration = details.duration
         state.answered_questions.add('duration')
@@ -319,13 +319,13 @@ def process_message(message):
                     'start': preferred_time,
                     'end': preferred_time + timedelta(minutes=state.meeting_duration or 30)
                 }
-                state.answered_questions.add('time')
-                response_parts.append(f"📅 Time: {preferred_time.strftime('%A, %B %d at %I:%M %p')}")
-                state_updated = True
-                logger.debug(f"Updated time: {preferred_time}")
+            state.answered_questions.add('time')
+            response_parts.append(f"📅 Time: {preferred_time.strftime('%A, %B %d at %I:%M %p')}")
+            state_updated = True
+            logger.debug(f"Updated time: {preferred_time}")
         except ValueError as e:
             logger.error(f"Error parsing date/time: {e}")
-    
+        
     if details.attendees:
         new_attendees = [email for email in details.attendees if email not in state.attendees]
         if new_attendees:
@@ -421,7 +421,7 @@ def process_message(message):
             response += "When would you like to schedule this meeting?"
         elif next_question == 'attendees':
             response += "Who would you like to invite to this meeting? (Please provide email addresses)"
-        return response
+    return response
     
     # If we get here, we couldn't understand the input
     return "I'm not sure what information you're providing. Here's what I have so far:\n\n" + \
