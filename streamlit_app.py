@@ -122,42 +122,44 @@ def get_oauth_redirect_uri():
 
 class ConversationState:
     def __init__(self):
+        self.reset()
+
+    def reset(self):
+        """Reset all state variables"""
         self.purpose = None
-        self.meeting_duration = 30  # Default duration in minutes
-        self.preferred_time = None  # Will be a dict with 'start' and 'end' datetime objects
+        self.meeting_duration = None
+        self.preferred_time = None
         self.attendees = set()
         self.answered_questions = set()
         self.current_step = 'initial'
         self.slots_shown = False
-        self.available_slots = []
-        self.last_question_asked = None
         self.selected_slot = None
-
-    def reset(self):
-        """Reset the conversation state"""
-        self.__init__()
+        self.available_slots = []
 
     def set_preferred_time(self, start_time, duration_minutes=None):
         """Set the preferred time for the meeting"""
         try:
-            if not isinstance(start_time, datetime):
-                start_time = dateparser.parse(str(start_time), settings={
+            # Parse the start time if it's a string
+            if isinstance(start_time, str):
+                parsed_time = dateparser.parse(start_time, settings={
                     'PREFER_DATES_FROM': 'future',
                     'RELATIVE_BASE': datetime.now()
                 })
-                if not start_time or not isinstance(start_time, datetime):
-                    logger.error(f"Failed to parse start_time: {start_time}")
+                if not parsed_time or not isinstance(parsed_time, datetime):
+                    logger.error(f"Failed to parse start time: {start_time}")
                     return False
+                start_time = parsed_time
 
             # Ensure the time is in the future
             if start_time <= datetime.now():
                 logger.warning("Start time is in the past")
                 return False
 
-            # Use provided duration or default
+            # Calculate end time
             duration = duration_minutes or self.meeting_duration or 30
             end_time = start_time + timedelta(minutes=duration)
 
+            # Store times as ISO format strings
             self.preferred_time = {
                 'start': start_time.isoformat(),
                 'end': end_time.isoformat()
@@ -168,48 +170,34 @@ class ConversationState:
             return False
 
     def is_complete(self):
-        """Check if all required information has been gathered."""
-        return (
-            self.purpose is not None
-            and self.meeting_duration is not None
-            and (self.preferred_time is not None or self.selected_slot is not None)
-            and len(self.attendees) > 0
-        )
-
-    def get_missing_info(self):
-        """Get a list of all missing pieces of information."""
-        missing = []
-        if self.purpose is None:
-            missing.append('purpose')
-        if self.meeting_duration is None:
-            missing.append('duration')
-        if self.preferred_time is None and self.selected_slot is None:
-            missing.append('time')
-        if not self.attendees:
-            missing.append('attendees')
-        return missing
+        """Check if all required information has been collected"""
+        required_questions = {'purpose', 'time', 'attendees'}
+        return all(q in self.answered_questions for q in required_questions)
 
     def get_next_question(self):
-        """Get the next piece of information we need to ask for."""
-        missing = self.get_missing_info()
-        return missing[0] if missing else None
+        """Get the next question to ask based on missing information"""
+        if 'purpose' not in self.answered_questions:
+            return 'purpose'
+        elif 'duration' not in self.answered_questions:
+            return 'duration'
+        elif 'time' not in self.answered_questions:
+            return 'time'
+        elif 'attendees' not in self.answered_questions:
+            return 'attendees'
+        return None
 
     def to_dict(self):
-        """Convert state to JSON-serializable dictionary"""
+        """Convert state to dictionary for debugging"""
         return {
             'purpose': self.purpose,
             'meeting_duration': self.meeting_duration,
-            'preferred_time': {
-                'start': self.preferred_time['start'].isoformat() if self.preferred_time else None,
-                'end': self.preferred_time['end'].isoformat() if self.preferred_time else None
-            } if self.preferred_time else None,
+            'preferred_time': self.preferred_time,
             'attendees': list(self.attendees),
             'answered_questions': list(self.answered_questions),
             'current_step': self.current_step,
             'slots_shown': self.slots_shown,
-            'available_slots': [slot.isoformat() if isinstance(slot, datetime) else slot for slot in self.available_slots],
-            'last_question_asked': self.last_question_asked,
-            'selected_slot': self.selected_slot.isoformat() if isinstance(self.selected_slot, datetime) else self.selected_slot
+            'selected_slot': self.selected_slot.isoformat() if isinstance(self.selected_slot, datetime) else self.selected_slot,
+            'available_slots': [slot.isoformat() if isinstance(slot, datetime) else slot for slot in self.available_slots]
         }
 
     def from_dict(self, data):
@@ -683,9 +671,35 @@ def show_chat_interface():
         
         # Display time information
         if state.preferred_time and state.preferred_time['start']:
-            st.write(f"- Preferred Time: {state.preferred_time['start'].strftime('%A, %B %d at %I:%M %p')}")
+            try:
+                start_time = dateparser.parse(state.preferred_time['start'], settings={
+                    'PREFER_DATES_FROM': 'future',
+                    'RELATIVE_BASE': datetime.now()
+                })
+                if start_time and isinstance(start_time, datetime):
+                    st.write(f"- Preferred Time: {start_time.strftime('%A, %B %d at %I:%M %p')}")
+                else:
+                    st.write("- Preferred Time: Invalid format")
+            except Exception as e:
+                logger.error(f"Error formatting preferred time: {e}")
+                st.write("- Preferred Time: Error in format")
         elif state.selected_slot:
-            st.write(f"- Selected Time: {state.selected_slot.strftime('%A, %B %d at %I:%M %p')}")
+            try:
+                if isinstance(state.selected_slot, str):
+                    slot_time = dateparser.parse(state.selected_slot, settings={
+                        'PREFER_DATES_FROM': 'future',
+                        'RELATIVE_BASE': datetime.now()
+                    })
+                else:
+                    slot_time = state.selected_slot
+                    
+                if slot_time and isinstance(slot_time, datetime):
+                    st.write(f"- Selected Time: {slot_time.strftime('%A, %B %d at %I:%M %p')}")
+                else:
+                    st.write("- Selected Time: Invalid format")
+            except Exception as e:
+                logger.error(f"Error formatting selected slot: {e}")
+                st.write("- Selected Time: Error in format")
         else:
             st.write("- Time: Not set")
             
@@ -697,10 +711,23 @@ def show_chat_interface():
         if state.available_slots:
             st.write("- Available Slots:")
             for i, slot in enumerate(state.available_slots, 1):
-                if isinstance(slot, datetime):
-                    st.write(f"  {i}. {slot.strftime('%A, %B %d at %I:%M %p')}")
-                else:
-                    st.write(f"  {i}. {slot}")
+                try:
+                    if isinstance(slot, str):
+                        parsed_slot = dateparser.parse(slot, settings={
+                            'PREFER_DATES_FROM': 'future',
+                            'RELATIVE_BASE': datetime.now()
+                        })
+                        if parsed_slot and isinstance(parsed_slot, datetime):
+                            st.write(f"  {i}. {parsed_slot.strftime('%A, %B %d at %I:%M %p')}")
+                        else:
+                            st.write(f"  {i}. Invalid format")
+                    elif isinstance(slot, datetime):
+                        st.write(f"  {i}. {slot.strftime('%A, %B %d at %I:%M %p')}")
+                    else:
+                        st.write(f"  {i}. Unknown format")
+                except Exception as e:
+                    logger.error(f"Error formatting slot {i}: {e}")
+                    st.write(f"  {i}. Error in format")
     
     # Display chat history
     for message in st.session_state.messages:
@@ -763,17 +790,31 @@ def process_message(message):
             date_str = f"{details.date} {details.time}"
             if state.set_preferred_time(date_str):
                 state.answered_questions.add('time')
-                formatted_time = state.preferred_time['start'].strftime('%A, %B %d at %I:%M %p')
-                response_parts.append(f"Meeting time set to: {formatted_time}")
-                state_updated = True
-                logger.debug(f"Updated time: {state.preferred_time}")
+                try:
+                    start_time = dateparser.parse(state.preferred_time['start'], settings={
+                        'PREFER_DATES_FROM': 'future',
+                        'RELATIVE_BASE': datetime.now()
+                    })
+                    if start_time and isinstance(start_time, datetime):
+                        formatted_time = start_time.strftime('%A, %B %d at %I:%M %p')
+                        response_parts.append(f"Meeting time set to: {formatted_time}")
+                        state_updated = True
+                        logger.debug(f"Updated time: {state.preferred_time}")
+                    else:
+                        raise ValueError("Invalid datetime format")
+                except Exception as e:
+                    logger.error(f"Error formatting time: {e}")
+                    response_parts.append("I couldn't understand the date and time. Please provide them in a clearer format.")
+                    if 'time' in state.answered_questions:
+                        state.answered_questions.remove('time')
+                    state.preferred_time = None
             else:
                 # If the time is invalid (past), ask for a future time
                 response_parts.append("Please provide a future date and time for the meeting.")
                 if 'time' in state.answered_questions:
                     state.answered_questions.remove('time')
                 state.preferred_time = None
-        except ValueError as e:
+        except Exception as e:
             logger.error(f"Error parsing date/time: {e}")
             response_parts.append("I couldn't understand the date and time. Please provide them in a clearer format.")
             if 'time' in state.answered_questions:
@@ -799,20 +840,36 @@ def process_message(message):
         creds = st.session_state.credentials
         if creds:
             try:
-            # Get available slots from calendar
+                # Parse the preferred time string back to datetime
+                if state.preferred_time and state.preferred_time['start']:
+                    try:
+                        start_time = dateparser.parse(state.preferred_time['start'], settings={
+                            'PREFER_DATES_FROM': 'future',
+                            'RELATIVE_BASE': datetime.now()
+                        })
+                        if not start_time or not isinstance(start_time, datetime):
+                            logger.error(f"Failed to parse preferred time: {state.preferred_time['start']}")
+                            return "I apologize, but there was an error with the preferred time. Let's try scheduling again."
+                    except Exception as e:
+                        logger.error(f"Error parsing preferred time: {e}")
+                        return "I apologize, but there was an error with the preferred time. Let's try scheduling again."
+                else:
+                    start_time = None
+
+                # Get available slots from calendar
                 available_slots = calendar_utils.find_available_slots(
-                creds,
-                start_time=state.preferred_time['start'] if state.preferred_time else None,
+                    creds,
+                    start_time=start_time,
                     duration_minutes=state.meeting_duration,
                     attendees=list(state.attendees)
                 )
-                
+
                 if available_slots:
                     # Automatically select the first available slot
                     selected_slot = available_slots[0]
                     state.selected_slot = selected_slot
                     state.current_step = 'confirming'
-                    
+
                     # Format confirmation message
                     return (f"I found an available slot for your meeting: {selected_slot.strftime('%A, %B %d at %I:%M %p')}.\n\n"
                            f"Here's a summary of your meeting:\n"
@@ -833,7 +890,7 @@ def process_message(message):
         logger.debug("Processing confirmation response")
         logger.debug(f"Message: {message}")
         logger.debug(f"Current state: {state.to_dict()}")
-        
+
         if message.lower() in ['yes', 'y', 'sure', 'ok', 'okay']:
             logger.debug("User confirmed scheduling")
             # Get calendar credentials
@@ -843,25 +900,29 @@ def process_message(message):
                     # Ensure selected_slot is a datetime object
                     if isinstance(state.selected_slot, str):
                         try:
-                            # Use dateparser without settings
-                            state.selected_slot = dateparser.parse(state.selected_slot)
-                            # Add timezone if not present
-                            if state.selected_slot.tzinfo is None:
-                                state.selected_slot = state.selected_slot.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                            parsed_slot = dateparser.parse(state.selected_slot, settings={
+                                'PREFER_DATES_FROM': 'future',
+                                'RELATIVE_BASE': datetime.now()
+                            })
+                            if parsed_slot and isinstance(parsed_slot, datetime):
+                                state.selected_slot = parsed_slot
+                            else:
+                                logger.error("Failed to parse selected slot")
+                                return "I apologize, but there was an error with the selected time. Let's try scheduling again."
                         except Exception as e:
-                            logger.error(f"Error parsing selected_slot: {e}")
+                            logger.error(f"Error parsing selected slot: {e}")
                             return "I apologize, but there was an error with the selected time. Let's try scheduling again."
-                    
+
                     if not isinstance(state.selected_slot, datetime):
                         logger.error("Selected slot is not a valid datetime object")
                         return "I apologize, but there was an error with the selected time. Let's try scheduling again."
-                    
+
                     logger.debug("Attempting to create calendar event")
                     logger.debug(f"Purpose: {state.purpose}")
                     logger.debug(f"Selected slot: {state.selected_slot}")
                     logger.debug(f"Duration: {state.meeting_duration}")
                     logger.debug(f"Attendees: {list(state.attendees)}")
-                    
+
                     # Create the calendar event
                     success = calendar_utils.create_calendar_event(
                         creds,
@@ -870,9 +931,9 @@ def process_message(message):
                         attendees=list(state.attendees),
                         duration_minutes=state.meeting_duration
                     )
-                    
+
                     logger.debug(f"Calendar event creation result: {success}")
-                    
+
                     if success:
                         logger.debug("Successfully created calendar event")
                         # Format success response
@@ -883,15 +944,15 @@ def process_message(message):
                                   f"👥 Attendees:\n" + "\n".join([f"• {attendee}" for attendee in state.attendees]) +
                                   "\n\nI've sent calendar invites to all attendees.\n\n"
                                   "Is there anything else I can help you with?")
-                        
-                        # Reset state completely
+
+                                # Reset state completely
                         logger.debug("Resetting conversation state")
                         state.reset()
                         state.current_step = 'initial'
                         state.slots_shown = False
                         state.selected_slot = None
                         state.available_slots = []
-                        
+
                         logger.debug("Returning success response")
                         return response
                     else:
@@ -908,6 +969,70 @@ def process_message(message):
                     return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
             else:
                 logger.warning("No valid credentials found")
+                return "Please authorize access to Google Calendar first."
+        elif message.lower() in ['no', 'n', 'nope']:
+            logger.debug("User declined scheduling")
+            state.current_step = 'gathering_info'
+            state.slots_shown = False
+            if 'time' in state.answered_questions:
+                state.answered_questions.remove('time')
+            state.preferred_time = None
+            state.selected_slot = None  # Clear the selected slot
+            return "Okay, let's try a different time. When would you like to schedule this meeting?"
+
+            # If we updated any state, ask for the next piece of information
+            if state_updated:
+                next_question = state.get_next_question()
+                if next_question:
+                    if response_parts:
+                        response_parts.append("")  # Add a blank line
+                    if next_question == 'purpose':
+                        response_parts.append("What's the purpose of your meeting?")
+                    elif next_question == 'duration':
+                        response_parts.append("How long would you like the meeting to be? (default is 30 minutes)")
+                    elif next_question == 'time':
+                        response_parts.append("When would you like to schedule this meeting? You can say things like:\n" +
+                                           "• 'tomorrow morning'\n" +
+                                           "• 'next Monday at 2pm'\n" +
+                                           "• 'June 28 at 10am'")
+                    elif next_question == 'attendees':
+                        response_parts.append("Who would you like to invite to this meeting? (Please provide email addresses)")
+                return "\n".join(response_parts)
+
+            # If no state was updated but we're missing information, ask for it
+            next_question = state.get_next_question()
+            if next_question:
+                if next_question == 'purpose':
+                    return "What's the purpose of your meeting?"
+                elif next_question == 'duration':
+                    return "How long would you like the meeting to be? (default is 30 minutes)"
+                elif next_question == 'time':
+                    return "When would you like to schedule this meeting? You can say things like:\n" + \
+                           "• 'tomorrow morning'\n" + \
+                           "• 'next Monday at 2pm'\n" + \
+                           "• 'June 28 at 10am'"
+                elif next_question == 'attendees':
+                    return "Who would you like to invite to this meeting? (Please provide email addresses)"
+
+            # If we get here, we couldn't understand the input
+            # Parse the preferred time string back to datetime for display
+            preferred_time_str = ""
+            if state.preferred_time and state.preferred_time['start']:
+                try:
+                    start_time = dateparser.parse(state.preferred_time['start'], settings={
+                        'PREFER_DATES_FROM': 'future',
+                        'RELATIVE_BASE': datetime.now()
+                    })
+                    if start_time and isinstance(start_time, datetime):
+                        preferred_time_str = f"📅 Time: {start_time.strftime('%A, %B %d at %I:%M %p')}\n"
+                except Exception as e:
+                    logger.error(f"Error formatting preferred time: {e}")
+
+            return "I'm not sure what information you're providing. Could you please be more specific? Here's what I have so far:\n\n" + \
+                   (f"📝 Purpose: {state.purpose}\n" if state.purpose else "") + \
+                   (f"🕒 Duration: {state.meeting_duration} minutes\n" if state.meeting_duration else "") + \
+                   preferred_time_str + \
+                   (f"📧 Attendees: {', '.join(state.attendees)}\n" if state.attendees else "")
 
 def show_voice_interface():
     """Display the voice interface"""
