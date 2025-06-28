@@ -381,7 +381,9 @@ def extract_meeting_details(text):
 
         # If still no parsed_date, try dateparser as fallback
         if not parsed_date:
-            parsed_date = parser.parse(text, settings={
+            # Use dateparser instead of dateutil.parser for better date parsing
+            import dateparser
+            parsed_date = dateparser.parse(text, settings={
                 'PREFER_DATES_FROM': 'future',
                 'RELATIVE_BASE': datetime.now(),
                 'PREFER_DAY_OF_MONTH': 'first',
