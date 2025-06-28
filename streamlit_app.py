@@ -131,7 +131,6 @@ class ConversationState:
         self.preferred_time = None
         self.attendees = set()
         self.answered_questions = set()
-        self.current_step = 'initial'
         self.slots_shown = False
         self.selected_slot = None
         self.available_slots = []
@@ -194,7 +193,6 @@ class ConversationState:
             'preferred_time': self.preferred_time,
             'attendees': list(self.attendees),
             'answered_questions': list(self.answered_questions),
-            'current_step': self.current_step,
             'slots_shown': self.slots_shown,
             'selected_slot': self.selected_slot.isoformat() if isinstance(self.selected_slot, datetime) else self.selected_slot,
             'available_slots': [slot.isoformat() if isinstance(slot, datetime) else slot for slot in self.available_slots]
@@ -848,6 +846,7 @@ def process_message(message):
                             'RELATIVE_BASE': datetime.now()
                         })
                         if not start_time or not isinstance(start_time, datetime):
+                            logger.error(f"Failed to parse preferred time: {state.preferred_time['start']}")
                             return "I apologize, but there was an error with the preferred time. Let's try scheduling again."
                     except Exception as e:
                         logger.error(f"Error parsing preferred time: {e}")
@@ -867,60 +866,12 @@ def process_message(message):
                     # Automatically select the first available slot
                     selected_slot = available_slots[0]
                     state.selected_slot = selected_slot
-                    state.current_step = 'confirming'
-
-                    # Format confirmation message
-                    return (f"I found an available slot for your meeting: {selected_slot.strftime('%A, %B %d at %I:%M %p')}.\n\n"
-                           f"Here's a summary of your meeting:\n"
-                           f"📝 Purpose: {state.purpose}\n"
-                           f"⏱️ Duration: {state.meeting_duration} minutes\n"
-                           f"👥 Attendees: {', '.join(state.attendees)}\n\n"
-                           "Should I go ahead and schedule this meeting? (yes/no)")
-                else:
-                    return "I couldn't find any available slots in the next week. Would you like to try a different time?"
-            except Exception as e:
-                logger.error(f"Error finding available slots: {e}")
-                return "I apologize, but there was an error checking calendar availability. Would you like to try again?"
-        else:
-            return "Please authorize access to Google Calendar first."
-
-    # If we're in confirming state, handle confirmation
-    if state.current_step == 'confirming':
-        logger.debug("Processing confirmation response")
-        logger.debug(f"Message: {message}")
-        logger.debug(f"Current state: {state.to_dict()}")
-
-        if message.lower() in ['yes', 'y', 'sure', 'ok', 'okay']:
-            logger.debug("User confirmed scheduling")
-            # Get calendar credentials
-            creds = st.session_state.credentials
-            if creds:
-                try:
-                    # Ensure selected_slot is a datetime object
-                    if isinstance(state.selected_slot, str):
-                        try:
-                            parsed_slot = dateparser.parse(state.selected_slot, settings={
-                                'PREFER_DATES_FROM': 'future',
-                                'RELATIVE_BASE': datetime.now()
-                            })
-                            if parsed_slot and isinstance(parsed_slot, datetime):
-                                state.selected_slot = parsed_slot
-                            else:
-                                logger.error("Failed to parse selected slot")
-                                return "I apologize, but there was an error with the selected time. Let's try scheduling again."
-                        except Exception as e:
-                            logger.error(f"Error parsing selected slot: {e}")
-                            return "I apologize, but there was an error with the selected time. Let's try scheduling again."
-
-                    if not isinstance(state.selected_slot, datetime):
-                        logger.error("Selected slot is not a valid datetime object")
-                        return "I apologize, but there was an error with the selected time. Let's try scheduling again."
 
                     # Create the calendar event
                     success = calendar_utils.create_calendar_event(
                         creds,
                         summary=state.purpose,
-                        start_time=state.selected_slot,
+                        start_time=selected_slot,
                         attendees=list(state.attendees),
                         duration_minutes=state.meeting_duration
                     )
@@ -929,7 +880,7 @@ def process_message(message):
                         # Format success response
                         response = (f"✅ Perfect! I've scheduled the meeting:\n\n"
                                   f"📝 Purpose: {state.purpose}\n"
-                                  f"📅 Time: {state.selected_slot.strftime('%A, %B %d at %I:%M %p')}\n"
+                                  f"📅 Time: {selected_slot.strftime('%A, %B %d at %I:%M %p')}\n"
                                   f"⏱️ Duration: {state.meeting_duration} minutes\n"
                                   f"👥 Attendees:\n" + "\n".join([f"• {attendee}" for attendee in state.attendees]) +
                                   "\n\nI've sent calendar invites to all attendees.\n\n"
@@ -939,20 +890,14 @@ def process_message(message):
                         state.reset()
                         return response
                     else:
-                        state.current_step = 'gathering_info'
                         return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
-                except Exception as e:
-                    logger.error(f"Error creating calendar event: {e}")
-                    state.current_step = 'gathering_info'
-                    return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
-            else:
-                return "Please authorize access to Google Calendar first."
-        elif message.lower() in ['no', 'n', 'nope']:
-            state.current_step = 'gathering_info'
-            if 'time' in state.answered_questions:
-                state.answered_questions.remove('time')
-            state.preferred_time = None
-            return "Okay, let's try a different time. When would you like to schedule this meeting?"
+                else:
+                    return "I couldn't find any available slots in the next week. Would you like to try a different time?"
+            except Exception as e:
+                logger.error(f"Error finding available slots: {e}")
+                return "I apologize, but there was an error checking calendar availability. Would you like to try again?"
+        else:
+            return "Please authorize access to Google Calendar first."
 
     # If we updated any state, ask for the next piece of information
     if state_updated:
