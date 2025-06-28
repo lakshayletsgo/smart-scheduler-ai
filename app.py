@@ -21,8 +21,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 import re
 from dateutil import parser
-import spacy
-from spacy.matcher import Matcher
+import nltk
+from nltk.tokenize import word_tokenize, sent_tokenize
+from nltk.tag import pos_tag
+from nltk.chunk import ne_chunk
 import logging
 
 # Set up logging
@@ -43,13 +45,17 @@ OAUTH_REDIRECT_URI = 'https://lakshayletsgo-smart-scheduler-ai-streamlit-app-xrb
 # Store active bot instance
 bot = None
 
-# Load spaCy model for NLP
+# Download required NLTK data
 try:
-    nlp = spacy.load('en_core_web_sm')
-except OSError:
-    import subprocess
-    subprocess.run(['python', '-m', 'spacy', 'download', 'en_core_web_sm'])
-    nlp = spacy.load('en_core_web_sm')
+    nltk.data.find('tokenizers/punkt')
+    nltk.data.find('taggers/averaged_perceptron_tagger')
+    nltk.data.find('chunkers/maxent_ne_chunker')
+    nltk.data.find('corpora/words')
+except LookupError:
+    nltk.download('punkt')
+    nltk.download('averaged_perceptron_tagger')
+    nltk.download('maxent_ne_chunker')
+    nltk.download('words')
 
 def credentials_to_dict(credentials):
     return {
@@ -218,26 +224,27 @@ class MeetingDetails:
         }
 
 def extract_meeting_details(text):
-    doc = nlp(text)
+    doc = word_tokenize(text)
+    pos_tags = pos_tag(doc)
+    named_entities = ne_chunk(pos_tags)
     details = MeetingDetails()
     logger.debug(f"Extracting details from text: {text}")
 
-    # Extract date and time using spaCy's entity recognition
-    for ent in doc.ents:
-        if ent.label_ == 'DATE':
-            try:
-                parsed_date = parser.parse(ent.text)
-                details.date = parsed_date.strftime('%Y-%m-%d')
-                logger.debug(f"Extracted date: {details.date}")
-            except:
-                pass
-        elif ent.label_ == 'TIME':
-            try:
-                parsed_time = parser.parse(ent.text)
-                details.time = parsed_time.strftime('%H:%M')
-                logger.debug(f"Extracted time: {details.time}")
-            except:
-                pass
+    # Extract date and time using NLTK's named entity recognition
+    for chunk in named_entities:
+        if hasattr(chunk, 'label'):
+            if chunk.label() == 'DATE' or chunk.label() == 'TIME':
+                entity_text = ' '.join([token for token, pos in chunk.leaves()])
+                try:
+                    parsed_date = parser.parse(entity_text)
+                    if chunk.label() == 'DATE':
+                        details.date = parsed_date.strftime('%Y-%m-%d')
+                        logger.debug(f"Extracted date: {details.date}")
+                    elif chunk.label() == 'TIME':
+                        details.time = parsed_date.strftime('%H:%M')
+                        logger.debug(f"Extracted time: {details.time}")
+                except:
+                    pass
 
     # Extract email addresses for attendees
     email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
@@ -245,56 +252,40 @@ def extract_meeting_details(text):
     logger.debug(f"Extracted attendees: {details.attendees}")
 
     # Extract purpose using improved patterns
+    sentences = sent_tokenize(text)
     purpose_patterns = [
-        [{'LOWER': 'schedule'}, {'OP': '*'}, {'POS': 'NOUN'}, {'LOWER': 'meeting'}],
-        [{'LOWER': 'schedule'}, {'OP': '*'}, {'POS': 'NOUN'}],
-        [{'LOWER': 'about'}, {'OP': '+'}, {'POS': 'NOUN'}],
-        [{'LOWER': 'discuss'}, {'OP': '+'}, {'POS': 'NOUN'}],
-        [{'LOWER': 'regarding'}, {'OP': '+'}, {'POS': 'NOUN'}],
-        [{'LOWER': 'for'}, {'OP': '+'}, {'POS': 'NOUN'}],
-        [{'POS': 'NOUN'}, {'LOWER': 'meeting'}],
-        [{'POS': 'ADJ'}, {'LOWER': 'meeting'}]
+        r'(?:schedule|set up|arrange|plan|organize|book).*?(?:meeting|call|session)\s+(?:for|about|to discuss|regarding)\s+(.*?)(?=\s+(?:with|at|on|by|\.|\?|$))',
+        r'(?:need|want|would like).*?(?:meeting|call|session)\s+(?:for|about|to discuss|regarding)\s+(.*?)(?=\s+(?:with|at|on|by|\.|\?|$))',
+        r'(?:purpose|topic|agenda|discuss|about)\s+(?:is|will be|would be)?\s+(.*?)(?=\s+(?:with|at|on|by|\.|\?|$))',
+        r'(?:to discuss|discuss about|talk about|regarding)\s+(.*?)(?=\s+(?:with|at|on|by|\.|\?|$))'
     ]
 
-    matcher = Matcher(nlp.vocab)
-    for i, pattern in enumerate(purpose_patterns):
-        matcher.add(f"PURPOSE_{i}", [pattern])
-
-    matches = matcher(doc)
-    
-    # Get the longest matching span for purpose
-    if matches:
-        longest_match = max(matches, key=lambda x: x[2] - x[1])
-        match_id, start, end = longest_match
-        purpose_span = doc[start:end]
-        
-        # Get the sentence containing the purpose
-        for sent in doc.sents:
-            if purpose_span.start >= sent.start and purpose_span.end <= sent.end:
-                # Extract the entire relevant part of the sentence
-                relevant_text = []
-                for token in sent:
-                    if token.dep_ in ['nsubj', 'dobj', 'pobj', 'compound', 'amod'] or token.pos_ in ['NOUN', 'ADJ']:
-                        relevant_text.append(token.text)
-                
-                if relevant_text:
-                    details.purpose = ' '.join(relevant_text).strip()
+    for sentence in sentences:
+        for pattern in purpose_patterns:
+            match = re.search(pattern, sentence, re.I)
+            if match:
+                purpose = match.group(1).strip()
+                # Clean up the purpose text
+                purpose = re.sub(r'^(the|a|an|some|this|that|these|those|my|our|their)\s+', '', purpose, flags=re.I)
+                if purpose and len(purpose) > 3:
+                    details.purpose = purpose
+                    logger.debug(f"Extracted purpose: {purpose}")
                     break
-        
-        if not details.purpose:
-            details.purpose = purpose_span.text
+        if details.purpose:
+            break
 
     # If no purpose was found using patterns, use a simple heuristic
     if not details.purpose:
-        for sent in doc.sents:
+        for sentence in sentences:
             # Skip sentences that are mainly about date/time
-            has_datetime = any(ent.label_ in ['DATE', 'TIME'] for ent in sent.ents)
-            if not has_datetime and len(sent.text.split()) > 3:
-                # Extract meaningful parts of the sentence
+            has_datetime = any(chunk.label() in ['DATE', 'TIME'] for chunk in named_entities if hasattr(chunk, 'label'))
+            if not has_datetime and len(sentence.split()) > 3:
+                # Extract meaningful parts of the sentence using POS tags
                 meaningful_parts = []
-                for token in sent:
-                    if token.pos_ in ['NOUN', 'VERB', 'ADJ'] and not token.is_stop:
-                        meaningful_parts.append(token.text)
+                sentence_pos = pos_tag(word_tokenize(sentence))
+                for token, pos in sentence_pos:
+                    if pos.startswith(('NN', 'VB', 'JJ')) and token.lower() not in ['schedule', 'meeting', 'call']:
+                        meaningful_parts.append(token)
                 if meaningful_parts:
                     details.purpose = ' '.join(meaningful_parts)
                     break

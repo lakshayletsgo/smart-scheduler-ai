@@ -17,10 +17,26 @@ import logging
 from voice_bot import VoiceBot
 import asyncio
 import sys
+import nltk
+from nltk.tokenize import word_tokenize, sent_tokenize
+from nltk.tag import pos_tag
+from nltk.chunk import ne_chunk
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
+# Download required NLTK data
+try:
+    nltk.data.find('tokenizers/punkt')
+    nltk.data.find('taggers/averaged_perceptron_tagger')
+    nltk.data.find('chunkers/maxent_ne_chunker')
+    nltk.data.find('corpora/words')
+except LookupError:
+    nltk.download('punkt')
+    nltk.download('averaged_perceptron_tagger')
+    nltk.download('maxent_ne_chunker')
+    nltk.download('words')
 
 # Load environment variables
 load_dotenv()
@@ -129,9 +145,14 @@ class MeetingDetails:
         return f"MeetingDetails(purpose={self.purpose}, date={self.date}, time={self.time}, duration={self.duration}, attendees={self.attendees})"
 
 def extract_meeting_details(text):
-    """Extract meeting details using improved regex patterns and date parsing."""
+    """Extract meeting details using improved regex patterns and NLTK."""
     details = MeetingDetails()
     logger.debug(f"Extracting details from: {text}")
+
+    # Tokenize and get named entities
+    tokens = word_tokenize(text)
+    pos_tags = pos_tag(tokens)
+    named_entities = ne_chunk(pos_tags)
 
     # Extract duration with improved patterns
     duration_match = re.search(r'(\d+)\s*(hour|hr|min|minutes?|hrs?)', text.lower())
@@ -152,6 +173,16 @@ def extract_meeting_details(text):
         # Try to find explicit date patterns
         date_match = re.search(r'(?:on\s+)?(next\s+)?(\w+day|tomorrow|next week|today)', text, re.I)
         date_str = date_match.group(0) if date_match else None
+
+        # Look for date/time entities in NLTK's named entities
+        for chunk in named_entities:
+            if hasattr(chunk, 'label'):
+                if chunk.label() in ['DATE', 'TIME']:
+                    entity_text = ' '.join([token for token, pos in chunk.leaves()])
+                    if not date_str and 'time' not in entity_text.lower():
+                        date_str = entity_text
+                    elif not time_str and any(t in entity_text.lower() for t in ['am', 'pm', ':'] + [str(i) for i in range(24)]):
+                        time_str = entity_text
 
         # Combine date and time if found separately
         if date_str or time_str:
@@ -185,6 +216,7 @@ def extract_meeting_details(text):
         logger.debug(f"Extracted attendees: {emails}")
 
     # Extract purpose with improved patterns
+    sentences = sent_tokenize(text)
     purpose_patterns = [
         r'(?:schedule|set up|arrange|plan|organize|book).*?(?:meeting|call|session)\s+(?:for|about|to discuss|regarding)\s+(.*?)(?=\s+(?:with|at|on|by|\.|\?|$))',
         r'(?:need|want|would like).*?(?:meeting|call|session)\s+(?:for|about|to discuss|regarding)\s+(.*?)(?=\s+(?:with|at|on|by|\.|\?|$))',
@@ -192,27 +224,35 @@ def extract_meeting_details(text):
         r'(?:to discuss|discuss about|talk about|regarding)\s+(.*?)(?=\s+(?:with|at|on|by|\.|\?|$))'
     ]
 
-    for pattern in purpose_patterns:
-        match = re.search(pattern, text, re.I)
-        if match:
-            purpose = match.group(1).strip()
-            # Clean up the purpose text
-            purpose = re.sub(r'^(the|a|an|some|this|that|these|those|my|our|their)\s+', '', purpose, flags=re.I)
-            if purpose and len(purpose) > 3:
-                details.purpose = purpose
-                logger.debug(f"Extracted purpose: {purpose}")
-                break
+    for sentence in sentences:
+        for pattern in purpose_patterns:
+            match = re.search(pattern, sentence, re.I)
+            if match:
+                purpose = match.group(1).strip()
+                # Clean up the purpose text
+                purpose = re.sub(r'^(the|a|an|some|this|that|these|those|my|our|their)\s+', '', purpose, flags=re.I)
+                if purpose and len(purpose) > 3:
+                    details.purpose = purpose
+                    logger.debug(f"Extracted purpose: {purpose}")
+                    break
+        if details.purpose:
+            break
 
     # If no purpose found with patterns, try first sentence without time/date/email
     if not details.purpose:
-        sentences = re.split(r'[.!?]+', text)
         for sentence in sentences:
             # Skip if sentence contains time/date/email indicators
             if not re.search(r'\b(?:today|tomorrow|next|at|on|pm|am|:\d{2}|\d{1,2}(?::\d{2})?|@)\b', sentence.lower()):
-                purpose = sentence.strip()
-                if purpose and len(purpose) > 3:
-                    details.purpose = purpose
-                    logger.debug(f"Extracted purpose from sentence: {purpose}")
+                # Extract meaningful parts using POS tags
+                sentence_tokens = word_tokenize(sentence)
+                sentence_pos = pos_tag(sentence_tokens)
+                meaningful_parts = []
+                for token, pos in sentence_pos:
+                    if pos.startswith(('NN', 'VB', 'JJ')) and token.lower() not in ['schedule', 'meeting', 'call']:
+                        meaningful_parts.append(token)
+                if meaningful_parts:
+                    details.purpose = ' '.join(meaningful_parts)
+                    logger.debug(f"Extracted purpose from sentence: {details.purpose}")
                     break
 
     logger.debug(f"Final extracted details: {details}")

@@ -11,4 +11,5 @@ python-dotenv==1.0.1
 dateparser==1.2.0
 pytz==2024.1
 requests==2.31.0
-bland>=0.3.0 
+bland>=0.3.0
+nltk==3.8.1 
