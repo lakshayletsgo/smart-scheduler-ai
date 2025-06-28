@@ -225,8 +225,10 @@ class MeetingDetails:
         }
 
 def extract_meeting_details(text):
-    doc = word_tokenize(text)
-    pos_tags = pos_tag(doc)
+    """Extract meeting details from user message"""
+    # Tokenize and tag parts of speech
+    tokens = word_tokenize(text)
+    pos_tags = pos_tag(tokens)
     named_entities = ne_chunk(pos_tags)
     details = MeetingDetails()
     logger.debug(f"Extracting details from text: {text}")
@@ -239,12 +241,14 @@ def extract_meeting_details(text):
                 try:
                     parsed_date = dateparser.parse(entity_text, settings={
                         'PREFER_DATES_FROM': 'future',
-                        'RELATIVE_BASE': datetime.now()
+                        'RELATIVE_BASE': datetime.now(),
+                        'PREFER_DAY_OF_MONTH': 'first',
+                        'DATE_ORDER': 'DMY'
                     })
                     if not parsed_date or not isinstance(parsed_date, datetime):
                         logger.warning(f"Failed to parse date from: {entity_text}")
                         continue
-                        
+
                     if chunk.label() == 'DATE':
                         details.date = parsed_date.strftime('%Y-%m-%d')
                         logger.debug(f"Extracted date: {details.date}")
@@ -254,6 +258,22 @@ def extract_meeting_details(text):
                 except Exception as e:
                     logger.error(f"Error parsing date/time: {e}")
                     continue
+
+    # If no date/time found through NER, try direct parsing
+    if not details.date or not details.time:
+        try:
+            parsed_date = dateparser.parse(text, settings={
+                'PREFER_DATES_FROM': 'future',
+                'RELATIVE_BASE': datetime.now(),
+                'PREFER_DAY_OF_MONTH': 'first',
+                'DATE_ORDER': 'DMY'
+            })
+            if parsed_date and isinstance(parsed_date, datetime):
+                details.date = parsed_date.strftime('%Y-%m-%d')
+                details.time = parsed_date.strftime('%H:%M')
+                logger.debug(f"Extracted date/time through direct parsing: {details.date} {details.time}")
+        except Exception as e:
+            logger.error(f"Error in direct date/time parsing: {e}")
 
     # Extract email addresses for attendees
     email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
@@ -299,8 +319,6 @@ def extract_meeting_details(text):
                     details.purpose = ' '.join(meaningful_parts)
                     break
 
-    logger.debug(f"Extracted purpose: {details.purpose}")
-
     # Clean up the purpose
     if details.purpose:
         # Remove common prefixes like "schedule" or "about"
@@ -310,10 +328,30 @@ def extract_meeting_details(text):
             purpose_words.pop(0)
         details.purpose = ' '.join(purpose_words).capitalize()
 
+    # Extract duration using patterns
+    duration_patterns = [
+        r'(\d+)\s*(?:min(?:ute)?s?|hours?)',
+        r'(?:for|duration|length)\s+(?:of\s+)?(\d+)\s*(?:min(?:ute)?s?|hours?)',
+        r'(?:min(?:ute)?s?|hours?)\s*:\s*(\d+)'
+    ]
+
+    for pattern in duration_patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            try:
+                duration = int(match.group(1))
+                if 'hour' in match.group().lower():
+                    duration *= 60
+                details.duration = duration
+                logger.debug(f"Extracted duration: {duration} minutes")
+                break
+            except (ValueError, IndexError):
+                continue
+
     # Check if we have all necessary details
     details.complete = bool(details.purpose and details.date and details.time and details.attendees)
     logger.debug(f"Details complete: {details.complete}")
-    logger.debug(f"Final extracted details: {details.to_dict()}")
+    logger.debug(f"Final extracted details: {details}")
 
     return details
 

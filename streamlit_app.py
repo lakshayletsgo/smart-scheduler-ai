@@ -809,7 +809,6 @@ def process_message(message):
                         state.answered_questions.remove('time')
                     state.preferred_time = None
             else:
-                # If the time is invalid (past), ask for a future time
                 response_parts.append("Please provide a future date and time for the meeting.")
                 if 'time' in state.answered_questions:
                     state.answered_questions.remove('time')
@@ -821,6 +820,7 @@ def process_message(message):
                 state.answered_questions.remove('time')
             state.preferred_time = None
     
+    # Handle attendees
     if details.attendees:
         new_attendees = [email for email in details.attendees if email not in state.attendees]
         if new_attendees:
@@ -830,7 +830,7 @@ def process_message(message):
             response_parts.append(f"Added attendees:\n{attendee_list}")
             state_updated = True
             logger.debug(f"Updated attendees: {new_attendees}")
-        
+    
     # Log current state for debugging
     logger.debug(f"Updated state: {state.to_dict()}")
     
@@ -848,7 +848,6 @@ def process_message(message):
                             'RELATIVE_BASE': datetime.now()
                         })
                         if not start_time or not isinstance(start_time, datetime):
-                            logger.error(f"Failed to parse preferred time: {state.preferred_time['start']}")
                             return "I apologize, but there was an error with the preferred time. Let's try scheduling again."
                     except Exception as e:
                         logger.error(f"Error parsing preferred time: {e}")
@@ -884,7 +883,7 @@ def process_message(message):
                 return "I apologize, but there was an error checking calendar availability. Would you like to try again?"
         else:
             return "Please authorize access to Google Calendar first."
-    
+
     # If we're in confirming state, handle confirmation
     if state.current_step == 'confirming':
         logger.debug("Processing confirmation response")
@@ -917,12 +916,6 @@ def process_message(message):
                         logger.error("Selected slot is not a valid datetime object")
                         return "I apologize, but there was an error with the selected time. Let's try scheduling again."
 
-                    logger.debug("Attempting to create calendar event")
-                    logger.debug(f"Purpose: {state.purpose}")
-                    logger.debug(f"Selected slot: {state.selected_slot}")
-                    logger.debug(f"Duration: {state.meeting_duration}")
-                    logger.debug(f"Attendees: {list(state.attendees)}")
-
                     # Create the calendar event
                     success = calendar_utils.create_calendar_event(
                         creds,
@@ -932,10 +925,7 @@ def process_message(message):
                         duration_minutes=state.meeting_duration
                     )
 
-                    logger.debug(f"Calendar event creation result: {success}")
-
                     if success:
-                        logger.debug("Successfully created calendar event")
                         # Format success response
                         response = (f"✅ Perfect! I've scheduled the meeting:\n\n"
                                   f"📝 Purpose: {state.purpose}\n"
@@ -945,94 +935,78 @@ def process_message(message):
                                   "\n\nI've sent calendar invites to all attendees.\n\n"
                                   "Is there anything else I can help you with?")
 
-                                # Reset state completely
-                        logger.debug("Resetting conversation state")
+                        # Reset state completely
                         state.reset()
-                        state.current_step = 'initial'
-                        state.slots_shown = False
-                        state.selected_slot = None
-                        state.available_slots = []
-
-                        logger.debug("Returning success response")
                         return response
                     else:
-                        logger.warning("Failed to create calendar event")
                         state.current_step = 'gathering_info'
-                        state.slots_shown = False
-                        state.selected_slot = None
                         return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
                 except Exception as e:
-                    logger.error(f"Error creating calendar event: {e}", exc_info=True)
+                    logger.error(f"Error creating calendar event: {e}")
                     state.current_step = 'gathering_info'
-                    state.slots_shown = False
-                    state.selected_slot = None
                     return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
             else:
-                logger.warning("No valid credentials found")
                 return "Please authorize access to Google Calendar first."
         elif message.lower() in ['no', 'n', 'nope']:
-            logger.debug("User declined scheduling")
             state.current_step = 'gathering_info'
-            state.slots_shown = False
             if 'time' in state.answered_questions:
                 state.answered_questions.remove('time')
             state.preferred_time = None
-            state.selected_slot = None  # Clear the selected slot
             return "Okay, let's try a different time. When would you like to schedule this meeting?"
 
-            # If we updated any state, ask for the next piece of information
-            if state_updated:
-                next_question = state.get_next_question()
-                if next_question:
-                    if response_parts:
-                        response_parts.append("")  # Add a blank line
-                    if next_question == 'purpose':
-                        response_parts.append("What's the purpose of your meeting?")
-                    elif next_question == 'duration':
-                        response_parts.append("How long would you like the meeting to be? (default is 30 minutes)")
-                    elif next_question == 'time':
-                        response_parts.append("When would you like to schedule this meeting? You can say things like:\n" +
-                                           "• 'tomorrow morning'\n" +
-                                           "• 'next Monday at 2pm'\n" +
-                                           "• 'June 28 at 10am'")
-                    elif next_question == 'attendees':
-                        response_parts.append("Who would you like to invite to this meeting? (Please provide email addresses)")
-                return "\n".join(response_parts)
+    # If we updated any state, ask for the next piece of information
+    if state_updated:
+        next_question = state.get_next_question()
+        if next_question:
+            if response_parts:
+                response_parts.append("")  # Add a blank line
+            if next_question == 'purpose':
+                response_parts.append("What's the purpose of your meeting?")
+            elif next_question == 'duration':
+                response_parts.append("How long would you like the meeting to be? (default is 30 minutes)")
+            elif next_question == 'time':
+                response_parts.append("When would you like to schedule this meeting? You can say things like:\n" +
+                                   "• 'tomorrow morning'\n" +
+                                   "• 'next Monday at 2pm'\n" +
+                                   "• 'June 28 at 10am'")
+            elif next_question == 'attendees':
+                response_parts.append("Who would you like to invite to this meeting? (Please provide email addresses)")
+        return "\n".join(response_parts)
 
-            # If no state was updated but we're missing information, ask for it
-            next_question = state.get_next_question()
-            if next_question:
-                if next_question == 'purpose':
-                    return "What's the purpose of your meeting?"
-                elif next_question == 'duration':
-                    return "How long would you like the meeting to be? (default is 30 minutes)"
-                elif next_question == 'time':
-                    return "When would you like to schedule this meeting? You can say things like:\n" + \
-                           "• 'tomorrow morning'\n" + \
-                           "• 'next Monday at 2pm'\n" + \
-                           "• 'June 28 at 10am'"
-                elif next_question == 'attendees':
-                    return "Who would you like to invite to this meeting? (Please provide email addresses)"
+    # If no state was updated but we're missing information, ask for it
+    next_question = state.get_next_question()
+    if next_question:
+        if next_question == 'purpose':
+            return "What's the purpose of your meeting?"
+        elif next_question == 'duration':
+            return "How long would you like the meeting to be? (default is 30 minutes)"
+        elif next_question == 'time':
+            return "When would you like to schedule this meeting? You can say things like:\n" + \
+                   "• 'tomorrow morning'\n" + \
+                   "• 'next Monday at 2pm'\n" + \
+                   "• 'June 28 at 10am'"
+        elif next_question == 'attendees':
+            return "Who would you like to invite to this meeting? (Please provide email addresses)"
 
-            # If we get here, we couldn't understand the input
-            # Parse the preferred time string back to datetime for display
-            preferred_time_str = ""
-            if state.preferred_time and state.preferred_time['start']:
-                try:
-                    start_time = dateparser.parse(state.preferred_time['start'], settings={
-                        'PREFER_DATES_FROM': 'future',
-                        'RELATIVE_BASE': datetime.now()
-                    })
-                    if start_time and isinstance(start_time, datetime):
-                        preferred_time_str = f"📅 Time: {start_time.strftime('%A, %B %d at %I:%M %p')}\n"
-                except Exception as e:
-                    logger.error(f"Error formatting preferred time: {e}")
+    # If we get here, we couldn't understand the input
+    # Parse the preferred time string back to datetime for display
+    preferred_time_str = ""
+    if state.preferred_time and state.preferred_time['start']:
+        try:
+            start_time = dateparser.parse(state.preferred_time['start'], settings={
+                'PREFER_DATES_FROM': 'future',
+                'RELATIVE_BASE': datetime.now()
+            })
+            if start_time and isinstance(start_time, datetime):
+                preferred_time_str = f"📅 Time: {start_time.strftime('%A, %B %d at %I:%M %p')}\n"
+        except Exception as e:
+            logger.error(f"Error formatting preferred time: {e}")
 
-            return "I'm not sure what information you're providing. Could you please be more specific? Here's what I have so far:\n\n" + \
-                   (f"📝 Purpose: {state.purpose}\n" if state.purpose else "") + \
-                   (f"🕒 Duration: {state.meeting_duration} minutes\n" if state.meeting_duration else "") + \
-                   preferred_time_str + \
-                   (f"📧 Attendees: {', '.join(state.attendees)}\n" if state.attendees else "")
+    return "I'm not sure what information you're providing. Could you please be more specific? Here's what I have so far:\n\n" + \
+           (f"📝 Purpose: {state.purpose}\n" if state.purpose else "") + \
+           (f"🕒 Duration: {state.meeting_duration} minutes\n" if state.meeting_duration else "") + \
+           preferred_time_str + \
+           (f"📧 Attendees: {', '.join(state.attendees)}\n" if state.attendees else "")
 
 def show_voice_interface():
     """Display the voice interface"""
