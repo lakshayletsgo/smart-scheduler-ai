@@ -798,7 +798,10 @@ def process_message(message):
                                   f"⏱️ Duration: {state.meeting_duration} minutes\n"
                                   f"👥 Attendees:\n" + "\n".join([f"• {attendee}" for attendee in state.attendees]) +
                                   "\n\nI've sent calendar invites to all attendees.")
+                        # Reset state after successful scheduling
                         state.reset()
+                        # Reset conversation state to initial
+                        state.current_step = 'initial'
                         return response
                     else:
                         return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
@@ -813,6 +816,7 @@ def process_message(message):
             if 'time' in state.answered_questions:
                 state.answered_questions.remove('time')
             state.preferred_time = None
+            state.selected_slot = None  # Clear the selected slot
             return "Okay, let's try a different time. When would you like to schedule this meeting?"
     
     # If we updated any state, ask for the next piece of information
