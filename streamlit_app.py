@@ -565,6 +565,88 @@ def process_message(message):
         initial_greeting = "━━━ Welcome! ━━━\n\n👋 Hello! I'm your AI scheduling assistant.\n\nI'll help you schedule your meeting. Let's get started!\n\nWhat's the purpose of your meeting?"
         return initial_greeting
     
+    # If we're showing slots, handle slot selection
+    if state.current_step == 'showing_slots' and state.available_slots:
+        try:
+            # Try to parse slot selection (1-based index)
+            slot_num = int(message.strip())
+            if 1 <= slot_num <= len(state.available_slots):
+                selected_slot = state.available_slots[slot_num - 1]
+                state.selected_slot = selected_slot
+                state.current_step = 'confirming'
+                
+                # Format confirmation message
+                return (f"Great! I'll schedule the meeting for {selected_slot.strftime('%A, %B %d at %I:%M %p')}.\n\n"
+                       f"Here's a summary of your meeting:\n"
+                       f"📝 Purpose: {state.purpose}\n"
+                       f"⏱️ Duration: {state.meeting_duration} minutes\n"
+                       f"👥 Attendees: {', '.join(state.attendees)}\n\n"
+                       "Should I go ahead and schedule this meeting? (yes/no)")
+            else:
+                return f"Please select a valid slot number between 1 and {len(state.available_slots)}."
+        except ValueError:
+            if message.lower() in ['yes', 'y', 'sure', 'ok', 'okay']:
+                return "Please select a slot first by entering its number."
+            elif message.lower() in ['no', 'n', 'nope']:
+                state.current_step = 'gathering_info'
+                state.slots_shown = False
+                state.available_slots = []
+                if 'time' in state.answered_questions:
+                    state.answered_questions.remove('time')
+                state.preferred_time = None
+                return "Okay, let's try a different time. When would you like to schedule this meeting?"
+            else:
+                return f"Please select a slot by entering its number (1-{len(state.available_slots)})."
+    
+    # If we're in confirming state, handle confirmation
+    if state.current_step == 'confirming':
+        if message.lower() in ['yes', 'y', 'sure', 'ok', 'okay']:
+            # Get calendar credentials
+            creds = st.session_state.credentials
+            if creds:
+                try:
+                    # Create the calendar event
+                    success = calendar_utils.create_calendar_event(
+                        creds,
+                        summary=state.purpose,
+                        start_time=state.selected_slot,
+                        attendees=list(state.attendees),
+                        duration_minutes=state.meeting_duration
+                    )
+                    
+                    if success:
+                        # Reset state for next meeting
+                        response = (f"✅ Perfect! I've scheduled the meeting:\n\n"
+                                  f"📝 Purpose: {state.purpose}\n"
+                                  f"📅 Time: {state.selected_slot.strftime('%A, %B %d at %I:%M %p')}\n"
+                                  f"⏱️ Duration: {state.meeting_duration} minutes\n"
+                                  f"👥 Attendees:\n" + "\n".join([f"• {attendee}" for attendee in state.attendees]) +
+                                  "\n\nI've sent calendar invites to all attendees.")
+                        state.reset()
+                        return response
+                    else:
+                        return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
+                except Exception as e:
+                    logger.error(f"Error creating calendar event: {e}")
+                    return "I apologize, but there was an error scheduling the meeting. Would you like to try a different time?"
+            else:
+                return "Please authorize access to Google Calendar first."
+        elif message.lower() in ['no', 'n', 'nope']:
+            state.current_step = 'showing_slots'
+            state.selected_slot = None
+            if state.available_slots:
+                slots_text = "Here are the available slots again:\n\n"
+                for i, slot in enumerate(state.available_slots, 1):
+                    slots_text += f"{i}. {slot.strftime('%A, %B %d at %I:%M %p')}\n"
+                return slots_text + "\nPlease select a slot by entering its number."
+            else:
+                state.current_step = 'gathering_info'
+                state.slots_shown = False
+                if 'time' in state.answered_questions:
+                    state.answered_questions.remove('time')
+                state.preferred_time = None
+                return "Okay, let's try a different time. When would you like to schedule this meeting?"
+    
     # Extract meeting details from user message
     details = extract_meeting_details(message)
     response_parts = []
@@ -627,17 +709,30 @@ def process_message(message):
         # Get calendar credentials
         creds = st.session_state.credentials
         if creds:
-            # Get available slots from calendar
-            available_slots = calendar_utils.find_available_slots(
-                creds,
-                start_time=state.preferred_time['start'] if state.preferred_time else None,
-                duration_minutes=state.meeting_duration,
-                attendees=list(state.attendees)
-            )
-            state.available_slots = available_slots
-            state.slots_shown = True
-            state.current_step = 'showing_slots'
-            return prompts.format_available_slots(available_slots)
+            try:
+                # Get available slots from calendar
+                available_slots = calendar_utils.find_available_slots(
+                    creds,
+                    start_time=state.preferred_time['start'] if state.preferred_time else None,
+                    duration_minutes=state.meeting_duration,
+                    attendees=list(state.attendees)
+                )
+                
+                if available_slots:
+                    state.available_slots = available_slots
+                    state.slots_shown = True
+                    state.current_step = 'showing_slots'
+                    
+                    # Format available slots
+                    slots_text = "Here are the available slots:\n\n"
+                    for i, slot in enumerate(available_slots, 1):
+                        slots_text += f"{i}. {slot.strftime('%A, %B %d at %I:%M %p')}\n"
+                    return slots_text + "\nPlease select a slot by entering its number."
+                else:
+                    return "I couldn't find any available slots in the next week. Would you like to try a different time?"
+            except Exception as e:
+                logger.error(f"Error finding available slots: {e}")
+                return "I apologize, but there was an error checking calendar availability. Would you like to try again?"
         else:
             return "Please authorize access to Google Calendar first."
     
@@ -762,7 +857,7 @@ def main():
         
         with tab2:
             show_voice_interface()
-            
+                
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
         logger.error(f"Application error: {str(e)}", exc_info=True)
