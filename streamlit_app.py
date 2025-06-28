@@ -199,7 +199,7 @@ class ConversationState:
             'slots_shown': self.slots_shown,
             'available_slots': [slot.isoformat() if isinstance(slot, datetime) else slot for slot in self.available_slots],
             'last_question_asked': self.last_question_asked,
-            'selected_slot': self.selected_slot.isoformat() if self.selected_slot else None
+            'selected_slot': self.selected_slot.isoformat() if isinstance(self.selected_slot, datetime) else self.selected_slot
         }
 
     def from_dict(self, data):
@@ -233,9 +233,14 @@ class ConversationState:
         selected_slot = data.get('selected_slot')
         if selected_slot:
             try:
-                self.selected_slot = parser.parse(selected_slot)
+                if isinstance(selected_slot, str):
+                    self.selected_slot = parser.parse(selected_slot)
+                else:
+                    self.selected_slot = selected_slot
             except (ValueError, TypeError):
                 self.selected_slot = None
+        else:
+            self.selected_slot = None
         
         self.attendees = set(data.get('attendees', []))
         self.answered_questions = set(data.get('answered_questions', []))
@@ -809,6 +814,18 @@ def process_message(message):
             creds = st.session_state.credentials
             if creds:
                 try:
+                    # Ensure selected_slot is a datetime object
+                    if isinstance(state.selected_slot, str):
+                        try:
+                            state.selected_slot = parser.parse(state.selected_slot)
+                        except Exception as e:
+                            logger.error(f"Error parsing selected_slot: {e}")
+                            return "I apologize, but there was an error with the selected time. Let's try scheduling again."
+                    
+                    if not isinstance(state.selected_slot, datetime):
+                        logger.error("Selected slot is not a valid datetime object")
+                        return "I apologize, but there was an error with the selected time. Let's try scheduling again."
+                    
                     logger.debug("Attempting to create calendar event")
                     logger.debug(f"Purpose: {state.purpose}")
                     logger.debug(f"Selected slot: {state.selected_slot}")
